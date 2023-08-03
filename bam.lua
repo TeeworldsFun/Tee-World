@@ -1,4 +1,5 @@
 Import("configure.lua")
+Import("other/mysql/mysql.lua")
 
 --- Setup Config -------
 config = NewConfig()
@@ -7,6 +8,7 @@ config:Add(OptTestCompileC("stackprotector", "int main(){return 0;}", "-fstack-p
 config:Add(OptTestCompileC("minmacosxsdk", "int main(){return 0;}", "-mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk"))
 config:Add(OptTestCompileC("macosxppc", "int main(){return 0;}", "-arch ppc"))
 config:Add(OptLibrary("zlib", "zlib.h", false))
+config:Add(Mysql.OptFind("mysql", false))
 config:Finalize("config.lua")
 
 -- data compiler
@@ -150,7 +152,7 @@ function build(settings)
 	if config.compiler.driver == "cl" then
 		settings.cc.flags:Add("/wd4244", "/wd4577")
 	else
-		settings.cc.flags:Add("-Wall", "-fno-exceptions")
+		settings.cc.flags:Add("-Wall", "-exceptions")
 		if family == "windows" then
 			-- disable visibility attribute support for gcc on windows
 			settings.cc.defines:Add("NO_VIZ")
@@ -231,6 +233,9 @@ function build(settings)
 		if platform == "macosx" then
 			launcher_settings.link.frameworks:Add("Cocoa")
 		end
+		server_settings.link.libs:Add("ssl")
+		server_settings.link.libs:Add("mysqlcppconn")
+		-- server_settings.link.libs:Add("mysqlclient") *cry I was did a whole system for it.
 
 	elseif family == "windows" then
 		-- Add ICU because its a HAVE to
@@ -242,7 +247,7 @@ function build(settings)
 			end
 			server_settings.link.libs:Add("icudt")
 			server_settings.link.libs:Add("icuin")
-			server_settings.link.libs:Add("icuuc")
+			server_settings.link.libs:Add("icuuc") 
 		else
 			if config.compiler.driver == "cl" then
 				server_settings.link.libpath:Add("other/icu/vc/lib64")

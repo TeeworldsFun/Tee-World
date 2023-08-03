@@ -368,3 +368,64 @@ void CCollision::MoveBox(vec2 *pInoutPos, vec2 *pInoutVel, vec2 Size, float Elas
 	*pInoutPos = Pos;
 	*pInoutVel = Vel;
 }
+
+bool CCollision::CheckTiles(vec2 Pos, int Deepness)
+{
+	for(int i = 0; i < Deepness; i++)
+	{
+		if(CheckPoint(Pos.x, Pos.y + i * 32))
+			return true;
+	}
+	return false;
+}
+
+bool CCollision::CheckParable(vec2 Pos, int Wideness, int Direction)
+{
+	/*
+	I need to tranlate the code with 32* in tiles
+	Thinking that a normal jump is 23 blocks wide and the jumping space is P0/0, S(11.5/5)
+	->St(368/160)
+	y = a * (x - 368)^2 +160
+	->a = -0.001181
+	this parabel has in this coordinate system that form: ^ 
+	so i don't need to change it
+	*/
+	for(int i = 2; i < Wideness; i++)
+	{
+		int x = Direction * 32 * i;//Tranlate from code to tiles
+		if(CheckPlatform(vec2(Pos.x + x, Pos.y + 0.0021626 * (x - Direction * 272) * (x - Direction * 272) - 160), 7))//with other directions: St(-368/160)
+			return true;//Found Solid, return true
+	}
+	return false;
+}
+
+bool CCollision::CheckPlatform(vec2 Pos, int Deepness)
+{
+	for(int i = 1; i < Deepness; i++)
+	{
+		if(CheckPoint(Pos.x, Pos.y + i * 32) && !CheckPoint(Pos.x, Pos.y))//landing place must be there
+			return true;
+		if(CheckPoint(Pos.x, Pos.y + i * 32) && CheckPoint(Pos.x, Pos.y))//For the case, landing space could be behind a wall
+			return false;
+	}
+	return false;
+}
+
+bool CCollision::IntersectTile(vec2 Pos0, vec2 Pos1)
+{
+	float Distance = distance(Pos0, Pos1);
+	int End = (Distance+1) / 16;//save some CPU
+
+	for(int i = 0; i < End; i++)
+	{
+		float a = i * 16 / Distance;
+		vec2 Pos = mix(Pos0, Pos1, a);
+		if(CheckPoint(Pos.x, Pos.y))
+		{
+			return true;
+		}
+
+	}
+	return false;
+}
+

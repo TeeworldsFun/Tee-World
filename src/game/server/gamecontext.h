@@ -17,6 +17,8 @@
 #include "gameworld.h"
 #include "player.h"
 
+#include "GameCore/Account/Account.h"
+
 #ifdef _MSC_VER
 typedef __int32 int32_t;
 typedef unsigned __int32 uint32_t;
@@ -25,6 +27,8 @@ typedef unsigned __int64 uint64_t;
 #else
 #include <stdint.h>
 #endif
+
+#include "GameCore/Database/DB.h"
 
 /*
 	Tick
@@ -55,11 +59,15 @@ class CGameContext : public IGameServer
 	CCollision m_Collision;
 	CNetObjHandler m_NetObjHandler;
 	CTuningParams m_Tuning;
-
-	static void ConsoleOutputCallback_Chat(const char *pStr, void *pUser);
+	CDB *m_pDB;
+	class CAccount *m_pAccount;
 
 	static void ConLanguage(IConsole::IResult *pResult, void *pUserData);
 	static void ConAbout(IConsole::IResult *pResult, void *pUserData);
+	static void ConRegister(IConsole::IResult *pResult, void *pUserData);
+
+
+	static void ConsoleOutputCallback_Chat(const char *pStr, void *pUser);
 	static void ConTuneParam(IConsole::IResult *pResult, void *pUserData);
 	static void ConTuneReset(IConsole::IResult *pResult, void *pUserData);
 	static void ConTuneDump(IConsole::IResult *pResult, void *pUserData);
@@ -88,6 +96,12 @@ class CGameContext : public IGameServer
 	int m_ConsoleOutputHandle_ChatPrint;
 	int m_ConsoleOutput_Target;
 
+	// Top5 Zomb
+	CTop *m_pTop;
+
+	// Zomb2
+	int m_MessageReturn;
+
 public:
 	int m_ZoneHandle_TeeWorlds;
 
@@ -97,6 +111,8 @@ public:
 	CCollision *Collision() { return &m_Collision; }
 	CTuningParams *Tuning() { return &m_Tuning; }
 	virtual class CLayers *Layers() { return &m_Layers; }
+	CDB *DB() { return m_pDB; }
+	CAccount *Account() { return m_pAccount; }
 
 	CGameContext();
 	~CGameContext();
@@ -132,7 +148,7 @@ public:
 	int m_VoteEnforce;
 	enum
 	{
-		VOTE_ENFORCE_UNKNOWN=0,
+		VOTE_ENFORCE_UNKNOWN = 0,
 		VOTE_ENFORCE_NO,
 		VOTE_ENFORCE_YES,
 	};
@@ -141,21 +157,20 @@ public:
 	CVoteOptionServer *m_pVoteOptionLast;
 
 	// helper functions
-	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, int64_t Mask=-1LL);
-	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int64_t Mask=-1LL);
-	void CreateHammerHit(vec2 Pos, int64_t Mask=-1LL);
-	void CreatePlayerSpawn(vec2 Pos, int64_t Mask=-1LL);
-	void CreateDeath(vec2 Pos, int Who, int64_t Mask=-1LL);
-	void CreateSound(vec2 Pos, int Sound, int64_t Mask=-1LL);
-	void CreateSoundGlobal(int Sound, int Target=-1);
-
+	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, int64_t Mask = -1LL);
+	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int64_t Mask = -1LL);
+	void CreateHammerHit(vec2 Pos, int64_t Mask = -1LL);
+	void CreatePlayerSpawn(vec2 Pos, int64_t Mask = -1LL);
+	void CreateDeath(vec2 Pos, int Who, int64_t Mask = -1LL);
+	void CreateSound(vec2 Pos, int Sound, int64_t Mask = -1LL);
+	void CreateSoundGlobal(int Sound, int Target = -1);
 
 	enum
 	{
-		CHAT_ALL=-2,
-		CHAT_SPEC=-1,
-		CHAT_RED=0,
-		CHAT_BLUE=1
+		CHAT_ALL = -2,
+		CHAT_SPEC = -1,
+		CHAT_RED = 0,
+		CHAT_BLUE = 1
 	};
 
 	// network
@@ -165,8 +180,6 @@ public:
 	void SendWeaponPickup(int ClientID, int Weapon);
 	void SendBroadcast(const char *pText, int ClientID);
 	void SetClientLanguage(int ClientID, const char *pLanguage);
-
-
 
 	//
 	void CheckPureTuning();
@@ -196,16 +209,20 @@ public:
 	virtual bool IsClientReady(int ClientID);
 	virtual bool IsClientPlayer(int ClientID);
 
-	virtual void OnSetAuthed(int ClientID,int Level);
-	
+	virtual void OnSetAuthed(int ClientID, int Level);
+
 	virtual const char *GameType();
 	virtual const char *Version();
 	virtual const char *NetVersion();
+
+	// Zomb2
+	void OnZombie(int ClientID, int Zomb);
+	void OnZombieKill(int ClientID);
 };
 
 inline int64_t CmaskAll() { return -1LL; }
-inline int64_t CmaskOne(int ClientID) { return 1LL<<ClientID; }
-inline int64_t CmaskAllExceptOne(int ClientID) { return CmaskAll()^CmaskOne(ClientID); }
-inline bool CmaskIsSet(int64_t Mask, int ClientID) { return (Mask&CmaskOne(ClientID)) != 0; }
+inline int64_t CmaskOne(int ClientID) { return 1LL << ClientID; }
+inline int64_t CmaskAllExceptOne(int ClientID) { return CmaskAll() ^ CmaskOne(ClientID); }
+inline bool CmaskIsSet(int64_t Mask, int ClientID) { return (Mask & CmaskOne(ClientID)) != 0; }
 
 #endif

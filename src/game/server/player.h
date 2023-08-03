@@ -13,14 +13,14 @@ class CPlayer
 	MACRO_ALLOC_POOL_ID()
 
 public:
-	CPlayer(CGameContext *pGameServer, int ClientID, int Team);
+	CPlayer(CGameContext *pGameServer, int ClientID, int Team, int Zomb);
 	~CPlayer();
 
 	void Init(int CID);
 
 	void TryRespawn();
 	void Respawn();
-	void SetTeam(int Team, bool DoChatMsg=true);
+	void SetTeam(int Team, bool DoChatMsg = true);
 	int GetTeam() const { return m_Team; };
 	int GetCID() const { return m_ClientID; };
 
@@ -29,7 +29,7 @@ public:
 	void Snap(int SnappingClient);
 
 	void FakeSnap(int SnappingClient);
-	
+
 	void OnDirectInput(CNetObj_PlayerInput *NewInput);
 	void OnPredictedInput(CNetObj_PlayerInput *NewInput);
 	void OnDisconnect(const char *pReason);
@@ -37,8 +37,8 @@ public:
 	void KillCharacter(int Weapon = WEAPON_GAME);
 	CCharacter *GetCharacter();
 
-	const char* GetLanguage();
-	void SetLanguage(const char* pLanguage);
+	const char *GetLanguage();
+	void SetLanguage(const char *pLanguage);
 
 	//---------------------------------------------------------
 	// this is used for snapping so we know how we can clip the view for the player
@@ -117,14 +117,39 @@ private:
 
 	char m_aLanguage[16];
 
-	private:
+private:
 	CTuningParams m_PrevTuningParams;
 	CTuningParams m_NextTuningParams;
 
-	void HandleTuningParams(); //This function will send the new parameters if needed
+	void HandleTuningParams(); // This function will send the new parameters if needed
 
 public:
-	CTuningParams* GetNextTuningParams() { return &m_NextTuningParams; };
+	// Zomb2
+	int m_SubZomb[3]; // all Types, 3 times ( 0, 1, 2)
+	int m_Zomb;
+	///////////////////////////////
+	// 1 = Zaby
+	// 2 = Zoomer
+	// 3 = Zooker
+	// 4 = Zamer
+	// 5 = Zunner
+	// 6 = Zaster
+	// 7 = Zotter
+	// 8 = Zenade
+	// 9 = Flombie
+	// 10 = Zinja
+	// 11 = Zele
+	// 12 = Zinvis
+	// 13 = Zeater
+	////////////////////////////////
+
+	// Zomb2
+	void DeleteCharacter();
+	int GetZomb() { return m_Zomb; };
+	bool GetZomb(int Zomb);
+
+public:
+	CTuningParams *GetNextTuningParams() { return &m_NextTuningParams; };
 };
 
 #endif

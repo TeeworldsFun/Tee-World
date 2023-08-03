@@ -14,6 +14,8 @@ typedef unsigned __int64 uint64_t;
 #include <stdint.h>
 #endif
 
+#include "topfive.h"
+
 /*
 	Class: Game Controller
 		Controls the main game logic. Keeping track of team and player score,
@@ -59,8 +61,6 @@ protected:
 	int m_RoundStartTick;
 	int m_GameOverTick;
 	int m_SuddenDeath;
-
-	int m_aTeamscore[2];
 
 	int m_Warmup;
 	int m_UnpauseTimer;
@@ -155,6 +155,26 @@ public:
 	virtual void PostReset();
 
 	double GetTime();
+
+	//Zomb2
+	int m_Wave;
+	int m_Zombie[13];//not sure about the amount of zombies
+	int m_ZombLeft;
+
+	void StartWave(int Wave);
+	void CheckZombie();
+	int RandZomb();
+	bool EndWave();
+	void DoZombMessage(int Which);
+	void DoLifeMessage(int Life);
+	void HandleTop();
+	void SetWaveAlg(int modulus, int wavedrittel);
+	int GetZombieReihenfolge(int wavedrittel);
+
+	int m_aTeamscore[2];//To set the new round in gamecontext
+	int GetConfigLife() {return g_Config.m_SvLives; };
+
+	CTop *m_pTop;
 };
 
 #endif

@@ -94,4 +94,15 @@ MACRO_CONFIG_INT(DbgTuning, dbg_tuning, 0, 0, 1, CFGFLAG_CLIENT, "")
 
 MACRO_CONFIG_INT(SvMapUpdateRate, sv_mapupdaterate, 5, 1, 100, CFGFLAG_SERVER, "(Tw32) real id <-> vanilla id players map update rate")
 
+//Zomb2
+MACRO_CONFIG_INT(SvZombWarmup, sv_zomb_warmup, 10, 0, 30, CFGFLAG_SERVER, "Number of seconds to do warmup before wave starts")
+MACRO_CONFIG_INT(SvLives, sv_lives, 10, 0, 0, CFGFLAG_SERVER, "Number of the human deaths until the round ends")
+MACRO_CONFIG_INT(SvAllowSpecVote, sv_spec_vote, 0, 1, 1, CFGFLAG_SERVER, "Allow spec voting or not")
+MACRO_CONFIG_INT(SvMaxZombieSpawn, sv_max_zombie_spawn, 1, 100, 20, CFGFLAG_SERVER, "Number of the max spawn tries of all zombies per tick")
+
+MACRO_CONFIG_STR(SvMySqlHostname, sv_sql_hostname, 32, "localhost", CFGFLAG_SERVER, "MySQL Host")
+MACRO_CONFIG_STR(SvMySqlDatabase, sv_sql_database, 32, "database", CFGFLAG_SERVER, "MySQL Database")
+MACRO_CONFIG_STR(SvMySqlUsername, sv_sql_username, 32, "nameless", CFGFLAG_SERVER, "MySQL Login")
+MACRO_CONFIG_STR(SvMySqlPassword, sv_sql_password, 32, "", CFGFLAG_SERVER, "MySQL Password")
+MACRO_CONFIG_INT(SvMySqlPort, sv_sql_port, 3306, 0, 65000, CFGFLAG_SERVER, "MySQL Port")
 #endif
