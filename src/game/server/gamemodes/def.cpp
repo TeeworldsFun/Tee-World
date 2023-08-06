@@ -8,9 +8,7 @@ CGameControllerDEF::CGameControllerDEF(class CGameContext *pGameServer)
 {
 	// Exchange this to a string that identifies your game mode.
 	// DM, TDM and CTF are reserved for teeworlds original modes.
-	m_pGameType = "zDef";
-
-	m_GameFlags = GAMEFLAG_TEAMS;
+	m_pGameType = "zWorld";
 }
 
 void CGameControllerDEF::Tick()

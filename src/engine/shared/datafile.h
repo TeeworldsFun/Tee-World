@@ -3,35 +3,84 @@
 #ifndef ENGINE_SHARED_DATAFILE_H
 #define ENGINE_SHARED_DATAFILE_H
 
+#include <engine/storage.h>
+
+#include <base/hash.h>
+#include <base/system.h>
+
+#include <zlib.h>
+
+enum
+{
+	ITEMTYPE_EX = 0xffff,
+};
+
+// FIXME: Original definition in "graphics" (CImageInfo)... clone like CImageInfoFile for server/client compatibility (really redefined in client side :/)
+class CImageInfoFile
+{
+public:
+	enum
+	{
+		FORMAT_AUTO=-1,
+		FORMAT_RGB=0,
+		FORMAT_RGBA=1,
+		FORMAT_ALPHA=2,
+	};
+
+	/* Variable: width
+		Contains the width of the image */
+	int m_Width;
+
+	/* Variable: height
+		Contains the height of the image */
+	int m_Height;
+
+	/* Variable: format
+		Contains the format of the image. See <Image Formats> for more information. */
+	int m_Format;
+
+	/* Variable: data
+		Pointer to the image data. */
+	void *m_pData;
+};
+
 // raw datafile access
 class CDataFileReader
 {
 	struct CDatafile *m_pDataFile;
 	void *GetDataImpl(int Index, int Swap);
+	int GetFileDataSize(int Index);
+
+	int GetExternalItemType(int InternalType);
+	int GetInternalItemType(int ExternalType);
+
 public:
-	CDataFileReader() : m_pDataFile(0) {}
+	CDataFileReader() :
+		m_pDataFile(nullptr) {}
 	~CDataFileReader() { Close(); }
 
-	bool IsOpen() const { return m_pDataFile != 0; }
+	bool IsOpen() const { return m_pDataFile != nullptr; }
 
 	bool Open(class IStorage *pStorage, const char *pFilename, int StorageType);
 	bool Close();
-
-	static bool GetCrcSize(class IStorage *pStorage, const char *pFilename, int StorageType, unsigned *pCrc, unsigned *pSize);
 
 	void *GetData(int Index);
 	void *GetDataSwapped(int Index); // makes sure that the data is 32bit LE ints when saved
 	int GetDataSize(int Index);
 	void UnloadData(int Index);
 	void *GetItem(int Index, int *pType, int *pID);
-	int GetItemSize(int Index);
+	int GetItemSize(int Index) const;
 	void GetType(int Type, int *pStart, int *pNum);
+	int FindItemIndex(int Type, int ID);
 	void *FindItem(int Type, int ID);
-	int NumItems();
-	int NumData();
+	int NumItems() const;
+	int NumData() const;
 	void Unload();
 
-	unsigned Crc();
+	SHA256_DIGEST Sha256() const;
+	unsigned Crc() const;
+	int MapSize() const;
+	IOHANDLE File();
 };
 
 // write access
@@ -63,27 +112,36 @@ class CDataFileWriter
 
 	enum
 	{
-		MAX_ITEM_TYPES=0xffff,
-		MAX_ITEMS=1024,
-		MAX_DATAS=1024,
+		MAX_ITEM_TYPES = 0x10000,
+		MAX_ITEMS = 1024,
+		MAX_DATAS = 1024,
+		MAX_EXTENDED_ITEM_TYPES = 64,
 	};
 
 	IOHANDLE m_File;
 	int m_NumItems;
 	int m_NumDatas;
 	int m_NumItemTypes;
+	int m_NumExtendedItemTypes;
 	CItemTypeInfo *m_pItemTypes;
 	CItemInfo *m_pItems;
 	CDataInfo *m_pDatas;
+	int m_aExtendedItemTypes[MAX_EXTENDED_ITEM_TYPES];
+
+	int GetExtendedItemTypeIndex(int Type);
+	int GetTypeFromIndex(int Index);
 
 public:
 	CDataFileWriter();
 	~CDataFileWriter();
-	bool Open(class IStorage *pStorage, const char *Filename);
-	int AddData(int Size, void *pData);
+	void Init();
+	bool OpenFile(class IStorage *pStorage, const char *pFilename, int StorageType = IStorage::TYPE_SAVE);
+	bool Open(class IStorage *pStorage, const char *pFilename, int StorageType = IStorage::TYPE_SAVE);
+	int AddData(int Size, void *pData, int CompressionLevel = Z_DEFAULT_COMPRESSION);
 	int AddDataSwapped(int Size, void *pData);
 	int AddItem(int Type, int ID, int Size, void *pData);
 	int Finish();
+
 };
 
 

@@ -103,6 +103,12 @@ public:
 
 	int m_Authed;
 
+	// Bot flag
+	bool m_IsBot;
+	class CBot *m_pBot;
+	
+	bool IsBot() { return m_IsBot; }
+
 private:
 	CCharacter *m_pCharacter;
 	CGameContext *m_pGameServer;

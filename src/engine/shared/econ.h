@@ -3,12 +3,18 @@
 
 #include "network.h"
 
+#include <engine/console.h>
+#include <base/color.h>
+
+class CConfig;
+class CNetBan;
+class ColorRGBA;
 
 class CEcon
 {
 	enum
 	{
-		MAX_AUTH_TRIES=3,
+		MAX_AUTH_TRIES = 3,
 	};
 
 	class CClient
@@ -16,17 +22,18 @@ class CEcon
 	public:
 		enum
 		{
-			STATE_EMPTY=0,
+			STATE_EMPTY = 0,
 			STATE_CONNECTED,
 			STATE_AUTHED,
 		};
 
 		int m_State;
-		int64 m_TimeConnected;
+		int64_t m_TimeConnected;
 		int m_AuthTries;
 	};
 	CClient m_aClients[NET_MAX_CONSOLE_CLIENTS];
 
+	CConfig *m_pConfig;
 	IConsole *m_pConsole;
 	CNetConsole m_NetConsole;
 
@@ -42,9 +49,10 @@ class CEcon
 	static int DelClientCallback(int ClientID, const char *pReason, void *pUser);
 
 public:
+	CEcon();
 	IConsole *Console() { return m_pConsole; }
 
-	void Init(IConsole *pConsole, class CNetBan *pNetBan);
+	void Init(IConsole *pConsole, CNetBan *pNetBan);
 	void Update();
 	void Send(int ClientID, const char *pLine);
 	void Shutdown();

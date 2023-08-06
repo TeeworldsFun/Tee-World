@@ -6,10 +6,19 @@
 #include "kernel.h"
 #include <engine/shared/jobs.h>
 
-class CHostLookup
+class CFutureLogger;
+class ILogger;
+
+class CHostLookup : public IJob
 {
+private:
+	void Run() override;
+
 public:
-	CJob m_Job;
+	CHostLookup();
+	CHostLookup(const char *pHostname, int Nettype);
+
+	int m_Result;
 	char m_aHostname[128];
 	int m_Nettype;
 	NETADDR m_Addr;
@@ -23,12 +32,14 @@ protected:
 	class CJobPool m_JobPool;
 
 public:
+	virtual ~IEngine() = default;
+
 	virtual void Init() = 0;
-	virtual void InitLogfile() = 0;
-	virtual void HostLookup(CHostLookup *pLookup, const char *pHostname, int Nettype) = 0;
-	virtual void AddJob(CJob *pJob, JOBFUNC pfnFunc, void *pData) = 0;
+	virtual void AddJob(std::shared_ptr<IJob> pJob) = 0;
+	static void RunJobBlocking(IJob *pJob);
 };
 
-extern IEngine *CreateEngine(const char *pAppname);
+extern IEngine *CreateEngine(const char *pAppname, int Jobs);
+extern IEngine *CreateTestEngine(const char *pAppname, int Jobs);
 
 #endif

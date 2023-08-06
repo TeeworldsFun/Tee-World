@@ -31,6 +31,7 @@ public:
 	{
 		const char *m_pName;
 		int m_Latency;
+		int m_Authed;
 		bool m_CustClt;
 	};
 
@@ -147,6 +148,9 @@ public:
 	virtual void SetClientCountry(int ClientID, int Country) = 0;
 	virtual void SetClientScore(int ClientID, int Score) = 0;
 
+	virtual int NewBot(int ClientID) = 0;
+	virtual int DelBot(int ClientID) = 0;
+
 	virtual int SnapNewID() = 0;
 	virtual void SnapFreeID(int ID) = 0;
 	virtual void *SnapNewItem(int Type, int ID, int Size) = 0;
@@ -164,6 +168,8 @@ public:
 
 	virtual void DemoRecorder_HandleAutoStart() = 0;
 	virtual bool DemoRecorder_IsRecording() = 0;
+
+	virtual void ExpireServerInfo() = 0;
 
 	virtual const char* GetClientLanguage(int ClientID) = 0;
 	virtual void SetClientLanguage(int ClientID, const char* pLanguage) = 0;
@@ -195,6 +201,9 @@ public:
 
 	virtual bool IsClientReady(int ClientID) = 0;
 	virtual bool IsClientPlayer(int ClientID) = 0;
+
+	virtual void DeleteBot(int i) = 0;
+	virtual bool ReplacePlayerByBot(int ClientID) = 0;
 
 	virtual const char *GameType() = 0;
 	virtual const char *Version() = 0;

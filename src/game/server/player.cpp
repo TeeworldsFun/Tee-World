@@ -3,6 +3,7 @@
 #include <new>
 #include <engine/shared/config.h>
 #include "player.h"
+#include "bot.h"
 
 MACRO_ALLOC_POOL_ID_IMPL(CPlayer, MAX_CLIENTS)
 
@@ -16,7 +17,7 @@ CPlayer::CPlayer(CGameContext *pGameServer, int ClientID, int Team, int Zomb)
 	m_ScoreStartTick = Server()->Tick();
 	m_pCharacter = 0;
 	m_ClientID = ClientID;
-	m_Team = GameServer()->m_pController->ClampTeam(Team);
+	m_Team = Team;
 	m_SpectatorID = SPEC_FREEVIEW;
 	m_LastActionTick = Server()->Tick();
 	m_TeamChangeTick = Server()->Tick();
@@ -37,10 +38,14 @@ CPlayer::CPlayer(CGameContext *pGameServer, int ClientID, int Team, int Zomb)
 	// Zomb2
 	m_Zomb = Zomb;
 	mem_zero(m_SubZomb, sizeof(m_SubZomb));
+
+	m_IsBot = false;
 }
 
 CPlayer::~CPlayer()
 {
+	if(m_pBot)
+		delete m_pBot;
 	delete m_pCharacter;
 	m_pCharacter = 0;
 }
@@ -69,7 +74,7 @@ void CPlayer::Tick()
 #ifdef CONF_DEBUG
 	if (!g_Config.m_DbgDummies || m_ClientID < MAX_CLIENTS - g_Config.m_DbgDummies)
 #endif
-		if (!Server()->ClientIngame(m_ClientID) && !m_Zomb)
+		if (!Server()->ClientIngame(m_ClientID) && !m_Zomb && !m_IsBot)
 			return;
 
 	Server()->SetClientScore(m_ClientID, m_Score);
@@ -115,6 +120,8 @@ void CPlayer::Tick()
 			{
 				delete m_pCharacter;
 				m_pCharacter = 0;
+				if(IsBot())
+					m_pBot->OnReset();
 			}
 		}
 		else if (m_Spawning && m_RespawnTick <= Server()->Tick())
@@ -154,7 +161,7 @@ void CPlayer::Snap(int SnappingClient)
 #ifdef CONF_DEBUG
 	if (!g_Config.m_DbgDummies || m_ClientID < MAX_CLIENTS - g_Config.m_DbgDummies)
 #endif
-		if (!Server()->ClientIngame(m_ClientID) && !m_Zomb)
+		if (!Server()->ClientIngame(m_ClientID) && !m_Zomb && !m_IsBot)
 			return;
 
 	int id = m_ClientID;
@@ -253,7 +260,7 @@ void CPlayer::Snap(int SnappingClient)
 	if (!pPlayerInfo)
 		return;
 
-	if (m_Zomb)
+	if (m_Zomb || m_IsBot)
 		pPlayerInfo->m_Latency = 0;
 	else
 		pPlayerInfo->m_Latency = SnappingClient == -1 ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aActLatency[m_ClientID];
@@ -373,6 +380,8 @@ void CPlayer::KillCharacter(int Weapon)
 		m_pCharacter->Die(m_ClientID, Weapon);
 		delete m_pCharacter;
 		m_pCharacter = 0;
+		if(IsBot())
+			m_pBot->OnReset();
 	}
 }
 
