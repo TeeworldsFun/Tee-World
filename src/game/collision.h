@@ -17,8 +17,8 @@ class CCollision
 
 	array< array<int> > m_Zones;
 
-	bool IsTileSolid(int x, int y);
-	int GetTile(int x, int y);
+	bool IsTileSolid(int x, int y) const;
+	int GetTile(int x, int y) const;
 
 public:
 	enum
@@ -51,6 +51,8 @@ public:
 	bool CheckParable(vec2 Pos, int Wideness, int Direction);
 	bool CheckPlatform(vec2 Pos, int Deepness);
 	bool IntersectTile(vec2 Pos0, vec2 Pos1);
+
+	int FastIntersectLine(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision) const;
 };
 
 #endif

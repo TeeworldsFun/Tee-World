@@ -1,75 +1,120 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include <base/system.h>
 #include "jobs.h"
+
+#include <base/lock_scope.h>
+
+IJob::IJob() :
+	m_Status(STATE_PENDING)
+{
+}
+
+IJob::IJob(const IJob &Other) :
+	m_Status(STATE_PENDING)
+{
+}
+
+IJob &IJob::operator=(const IJob &Other)
+{
+	m_Status = STATE_PENDING;
+	return *this;
+}
+
+IJob::~IJob() = default;
+
+int IJob::Status()
+{
+	return m_Status.load();
+}
 
 CJobPool::CJobPool()
 {
 	// empty the pool
+	m_NumThreads = 0;
+	m_Shutdown = false;
 	m_Lock = lock_create();
+	semaphore_init(&m_Semaphore);
 	m_pFirstJob = 0;
 	m_pLastJob = 0;
+}
+
+CJobPool::~CJobPool()
+{
+	if(!m_Shutdown)
+	{
+		Destroy();
+	}
 }
 
 void CJobPool::WorkerThread(void *pUser)
 {
 	CJobPool *pPool = (CJobPool *)pUser;
 
-	while(1)
+	while(!pPool->m_Shutdown)
 	{
-		CJob *pJob = 0;
+		std::shared_ptr<IJob> pJob = 0;
 
 		// fetch job from queue
-		lock_wait(pPool->m_Lock);
-		if(pPool->m_pFirstJob)
+		semaphore_wait(&pPool->m_Semaphore);
 		{
-			pJob = pPool->m_pFirstJob;
-			pPool->m_pFirstJob = pPool->m_pFirstJob->m_pNext;
+			CLockScope ls(pPool->m_Lock);
 			if(pPool->m_pFirstJob)
-				pPool->m_pFirstJob->m_pPrev = 0;
-			else
-				pPool->m_pLastJob = 0;
+			{
+				pJob = pPool->m_pFirstJob;
+				pPool->m_pFirstJob = pPool->m_pFirstJob->m_pNext;
+				if(!pPool->m_pFirstJob)
+					pPool->m_pLastJob = 0;
+			}
 		}
-		lock_unlock(pPool->m_Lock);
 
 		// do the job if we have one
 		if(pJob)
 		{
-			pJob->m_Status = CJob::STATE_RUNNING;
-			pJob->m_Result = pJob->m_pfnFunc(pJob->m_pFuncData);
-			pJob->m_Status = CJob::STATE_DONE;
+			RunBlocking(pJob.get());
 		}
-		else
-			thread_sleep(10);
 	}
-
 }
 
-int CJobPool::Init(int NumThreads)
+void CJobPool::Init(int NumThreads)
 {
 	// start threads
+	m_NumThreads = NumThreads > MAX_THREADS ? MAX_THREADS : NumThreads;
 	for(int i = 0; i < NumThreads; i++)
-		thread_init(WorkerThread, this);
-	return 0;
+		m_apThreads[i] = thread_init(WorkerThread, this);
 }
 
-int CJobPool::Add(CJob *pJob, JOBFUNC pfnFunc, void *pData)
+void CJobPool::Destroy()
 {
-	mem_zero(pJob, sizeof(CJob));
-	pJob->m_pfnFunc = pfnFunc;
-	pJob->m_pFuncData = pData;
-
-	lock_wait(m_Lock);
-
-	// add job to queue
-	pJob->m_pPrev = m_pLastJob;
-	if(m_pLastJob)
-		m_pLastJob->m_pNext = pJob;
-	m_pLastJob = pJob;
-	if(!m_pFirstJob)
-		m_pFirstJob = pJob;
-
-	lock_unlock(m_Lock);
-	return 0;
+	m_Shutdown = true;
+	for(int i = 0; i < m_NumThreads; i++)
+		semaphore_signal(&m_Semaphore);
+	for(int i = 0; i < m_NumThreads; i++)
+	{
+		if(m_apThreads[i])
+			thread_wait(m_apThreads[i]);
+	}
+	lock_destroy(m_Lock);
+	semaphore_destroy(&m_Semaphore);
 }
 
+void CJobPool::Add(std::shared_ptr<IJob> pJob)
+{
+	{
+		CLockScope ls(m_Lock);
+		// add job to queue
+		if(m_pLastJob)
+			m_pLastJob->m_pNext = pJob;
+		m_pLastJob = std::move(pJob);
+		if(!m_pFirstJob)
+			m_pFirstJob = m_pLastJob;
+	}
+
+	semaphore_signal(&m_Semaphore);
+}
+
+void CJobPool::RunBlocking(IJob *pJob)
+{
+	pJob->m_Status = IJob::STATE_RUNNING;
+	pJob->Run();
+	pJob->m_Status = IJob::STATE_DONE;
+}

@@ -6,6 +6,7 @@
 #include <base/system.h>
 
 #include <engine/storage.h>
+#include <engine/server.h>
 #include <engine/shared/protocol.h>
 
 #include "config.h"
@@ -154,14 +155,14 @@ int CConsole::ParseArgs(CResult *pResult, const char *pFormat)
 			{
 				pResult->AddArgument(pStr);
 
-				if(Command == 'r') // rest of the string
-					break;
-				else if(Command == 'i') // validate int
+				if(Command == 'i') // validate int
 					pStr = str_skip_to_whitespace(pStr);
 				else if(Command == 'f') // validate float
 					pStr = str_skip_to_whitespace(pStr);
 				else if(Command == 's') // validate string
 					pStr = str_skip_to_whitespace(pStr);
+				else if(Command == 'r') // rest of the string
+					break;
 
 				if(pStr[0] != 0) // check for end of string
 				{
@@ -205,12 +206,7 @@ void CConsole::Print(int Level, const char *pFrom, const char *pStr)
 		if(!m_aPrintCB[i].m_pfnPrintCallback)
 			continue;
 		
-		if(m_aPrintCB[i].m_OutputLevel == OUTPUT_LEVEL_CHAT)
-		{
-			if(Level == OUTPUT_LEVEL_CHAT)
-				m_aPrintCB[i].m_pfnPrintCallback(pStr, m_aPrintCB[i].m_pPrintCallbackUserdata);
-		}
-		else if(Level <= m_aPrintCB[i].m_OutputLevel)
+		if(Level <= m_aPrintCB[i].m_OutputLevel)
 		{
 			char aBuf[1024];
 			str_format(aBuf, sizeof(aBuf), "[%s]: %s", pFrom, pStr);
@@ -271,13 +267,10 @@ bool CConsole::LineIsValid(const char *pStr)
 void CConsole::ExecuteLineStroked(int Stroke, const char *pStr, int ClientID)
 {
 	int OutputLevel = OUTPUT_LEVEL_STANDARD;
-	if(m_FlagMask&CFGFLAG_CHAT)
-		OutputLevel = OUTPUT_LEVEL_CHAT;
 	
 	while(pStr && *pStr)
 	{
 		CResult Result;
-		Result.SetClientID(ClientID);
 		const char *pEnd = pStr;
 		const char *pNextPart = 0;
 		int InString = 0;
@@ -787,9 +780,6 @@ void CConsole::Register(const char *pName, const char *pParams,
 
 	pCommand->m_Flags = Flags;
 	pCommand->m_Temp = false;
-	
-	if(Flags & CFGFLAG_CHAT)
-		pCommand->SetAccessLevel(IConsole::ACCESS_LEVEL_USER);
 
 	if(DoAdd)
 		AddCommandSorted(pCommand);

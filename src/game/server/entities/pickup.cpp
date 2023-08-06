@@ -44,8 +44,7 @@ void CPickup::Tick()
 	}
 	// Check if a player intersected us
 	CCharacter *pChr = GameServer()->m_World.ClosestCharacter(m_Pos, 20.0f, 0);
-	
-	if(pChr && pChr->IsAlive() && !pChr->GetPlayer()->GetZomb())
+	if(pChr && pChr->IsAlive())
 	{
 		// player picked us up, is someone was hooking us, let them go
 		int RespawnTime = -1;
@@ -139,4 +138,15 @@ void CPickup::Snap(int SnappingClient)
 	pP->m_Y = (int)m_Pos.y;
 	pP->m_Type = m_Type;
 	pP->m_Subtype = m_Subtype;
+}
+
+bool CPickup::IsWeapon()
+{
+	if (m_SpawnTick > 0)
+		return false;
+	
+	if (m_Type == POWERUP_WEAPON)
+		return true;
+	
+	return false;
 }

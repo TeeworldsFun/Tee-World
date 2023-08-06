@@ -21,6 +21,11 @@ inline float sign(float f)
 	return f<0.0f?-1.0f:1.0f;
 }
 
+inline int round_truncate(float f)
+{
+	return (int)f;
+}
+
 inline int round_to_int(float f)
 {
 	if(f > 0)

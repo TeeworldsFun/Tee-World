@@ -11,6 +11,13 @@
 #include "detect.h"
 #include <stdlib.h>
 
+#ifdef CONF_PLATFORM_LINUX
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+
+#include <chrono>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -186,7 +193,9 @@ enum {
 
 	IOSEEK_START = 0,
 	IOSEEK_CUR = 1,
-	IOSEEK_END = 2
+	IOSEEK_END = 2,
+
+	IO_MAX_PATH_LENGTH = 512,
 };
 
 typedef struct IOINTERNAL *IOHANDLE;
@@ -398,6 +407,74 @@ void thread_yield();
 */
 void thread_detach(void *thread);
 
+// Enable thread safety attributes only with clang.
+// The attributes can be safely erased when compiling with other compilers.
+#if defined(__clang__) && (!defined(SWIG))
+#define THREAD_ANNOTATION_ATTRIBUTE__(x) __attribute__((x))
+#else
+#define THREAD_ANNOTATION_ATTRIBUTE__(x) // no-op
+#endif
+
+#define CAPABILITY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(capability(x))
+
+#define SCOPED_CAPABILITY \
+	THREAD_ANNOTATION_ATTRIBUTE__(scoped_lockable)
+
+#define GUARDED_BY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(guarded_by(x))
+
+#define PT_GUARDED_BY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(pt_guarded_by(x))
+
+#define ACQUIRED_BEFORE(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(acquired_before(__VA_ARGS__))
+
+#define ACQUIRED_AFTER(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(acquired_after(__VA_ARGS__))
+
+#define REQUIRES(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(requires_capability(__VA_ARGS__))
+
+#define REQUIRES_SHARED(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(requires_shared_capability(__VA_ARGS__))
+
+#define ACQUIRE(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(acquire_capability(__VA_ARGS__))
+
+#define ACQUIRE_SHARED(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(acquire_shared_capability(__VA_ARGS__))
+
+#define RELEASE(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(release_capability(__VA_ARGS__))
+
+#define RELEASE_SHARED(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(release_shared_capability(__VA_ARGS__))
+
+#define RELEASE_GENERIC(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(release_generic_capability(__VA_ARGS__))
+
+#define TRY_ACQUIRE(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(try_acquire_capability(__VA_ARGS__))
+
+#define TRY_ACQUIRE_SHARED(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(try_acquire_shared_capability(__VA_ARGS__))
+
+#define EXCLUDES(...) \
+	THREAD_ANNOTATION_ATTRIBUTE__(locks_excluded(__VA_ARGS__))
+
+#define ASSERT_CAPABILITY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(assert_capability(x))
+
+#define ASSERT_SHARED_CAPABILITY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(assert_shared_capability(x))
+
+#define RETURN_CAPABILITY(x) \
+	THREAD_ANNOTATION_ATTRIBUTE__(lock_returned(x))
+
+#define NO_THREAD_SAFETY_ANALYSIS \
+	THREAD_ANNOTATION_ATTRIBUTE__(no_thread_safety_analysis)
+
 /* Group: Locks */
 typedef void* LOCK;
 
@@ -436,26 +513,41 @@ __extension__ typedef long long int64;
 #else
 typedef long long int64;
 #endif
-/*
-	Function: time_get
-		Fetches a sample from a high resolution timer.
+void set_new_tick();
 
-	Returns:
-		Current value of the timer.
+/**
+ * Fetches a sample from a high resolution timer.
+ *
+ * @ingroup Time
+ *
+ * @return Current value of the timer.
+ *
+ * @remark To know how fast the timer is ticking, see @link time_freq @endlink.
+ *
+ * @see time_freq
+ */
+int64_t time_get_impl();
 
-	Remarks:
-		To know how fast the timer is ticking, see <time_freq>.
-*/
-int64 time_get();
+/**
+ * Fetches a sample from a high resolution timer.
+ *
+ * @ingroup Time
+ *
+ * @return Current value of the timer.
+ *
+ * @remark To know how fast the timer is ticking, see @link time_freq @endlink.
+ * @remark Uses @link time_get_impl @endlink to fetch the sample.
+ *
+ * @see time_freq time_get_impl
+ */
+int64_t time_get();
 
-/*
-	Function: time_freq
-		Returns the frequency of the high resolution timer.
-
-	Returns:
-		Returns the frequency of the high resolution timer.
-*/
-int64 time_freq();
+/**
+ * @ingroup Time
+ *
+ * @return The frequency of the high resolution timer.
+ */
+int64_t time_freq();
 
 /*
 	Function: time_timestamp
@@ -466,13 +558,27 @@ int64 time_freq();
 */
 int time_timestamp();
 
+std::chrono::nanoseconds time_get_nanoseconds();
 /* Group: Network General */
+#define VLEN 128
+#define PACKETSIZE 1400
 typedef struct
 {
-	int type;
-	int ipv4sock;
-	int ipv6sock;
-} NETSOCKET;
+#ifdef CONF_PLATFORM_LINUX
+	int pos;
+	int size;
+	struct mmsghdr msgs[VLEN];
+	struct iovec iovecs[VLEN];
+	char bufs[VLEN][PACKETSIZE];
+	char sockaddrs[VLEN][128];
+#else
+	char buf[PACKETSIZE];
+#endif
+} NETSOCKET_BUFFER;
+
+void net_buffer_init(NETSOCKET_BUFFER *buffer);
+void net_buffer_reinit(NETSOCKET_BUFFER *buffer);
+void net_buffer_simple(NETSOCKET_BUFFER *buffer, char **buf, int *size);
 
 enum
 {
@@ -485,11 +591,26 @@ enum
 	NETTYPE_ALL = NETTYPE_IPV4|NETTYPE_IPV6
 };
 
-typedef struct
+struct NETSOCKET_INTERNAL
+{
+	int type;
+	int ipv4sock;
+	int ipv6sock;
+
+	NETSOCKET_BUFFER buffer;
+};
+static NETSOCKET_INTERNAL invalid_socket = {NETTYPE_INVALID, -1, -1, -1};
+
+typedef struct NETSOCKET_INTERNAL *NETSOCKET;
+
+typedef struct NETADDR
 {
 	unsigned int type;
 	unsigned char ip[16];
 	unsigned short port;
+
+	bool operator==(const NETADDR &other) const;
+	bool operator!=(const NETADDR &other) const { return !(*this == other); }
 } NETADDR;
 
 /*
@@ -530,6 +651,20 @@ int net_host_lookup(const char *hostname, NETADDR *addr, int types);
 */
 int net_addr_comp(const NETADDR *a, const NETADDR *b);
 
+/**
+ * Compares two network addresses ignoring port.
+ *
+ * @ingroup Network-General
+ *
+ * @param a Address to compare
+ * @param b Address to compare to.
+ *
+ * @return `< 0` - Address a is less than address b
+ * @return `0` - Address a is equal to address b
+ * @return `> 0` - Address a is greater than address b
+ */
+int net_addr_comp_noport(const NETADDR *a, const NETADDR *b);
+
 /*
 	Function: net_addr_str
 		Turns a network address into a representive string.
@@ -558,6 +693,19 @@ void net_addr_str(const NETADDR *addr, char *string, int max_length, int add_por
 		string - String to parse.
 */
 int net_addr_from_str(NETADDR *addr, const char *string);
+
+/*
+	Function: net_socket_type
+		Determine a socket's type.
+
+	Parameters:
+		sock - Socket whose type should be determined.
+
+	Returns:
+		The socket type, a bitset of `NETTYPE_IPV4`, `NETTYPE_IPV6` and
+		`NETTYPE_WEBSOCKET_IPV4`.
+*/
+int net_socket_type(NETSOCKET sock);
 
 /* Group: Network UDP */
 
@@ -605,7 +753,7 @@ int net_udp_send(NETSOCKET sock, const NETADDR *addr, const void *data, int size
 		On success it returns the number of bytes recived. Returns -1
 		on error.
 */
-int net_udp_recv(NETSOCKET sock, NETADDR *addr, void *data, int maxsize);
+int net_udp_recv(NETSOCKET sock, NETADDR *addr, unsigned char **data);
 
 /*
 	Function: net_udp_close
@@ -994,7 +1142,25 @@ const char *str_find(const char *haystack, const char *needle);
 		- The desination buffer will be zero-terminated
 */
 void str_hex(char *dst, int dst_size, const void *data, int data_size);
+/*
+	Function: str_hex_decode
+		Takes a hex string *without spaces between bytes* and returns a
+		byte array.
 
+	Parameters:
+		dst - Buffer for the byte array
+		dst_size - size of the buffer
+		data - String to decode
+
+	Returns:
+		2 - String doesn't exactly fit the buffer
+		1 - Invalid character in string
+		0 - Success
+
+	Remarks:
+		- The contents of the buffer is only valid on success
+*/
+int str_hex_decode(void *dst, int dst_size, const char *src);
 /*
 	Function: str_timestamp
 		Copies a time stamp in the format year-month-day_hour-minute-second to the string.
@@ -1025,6 +1191,18 @@ void str_timestamp(char *buffer, int buffer_size);
 */
 typedef int (*FS_LISTDIR_CALLBACK)(const char *name, int is_dir, int dir_type, void *user);
 int fs_listdir(const char *dir, FS_LISTDIR_CALLBACK cb, int type, void *user);
+
+/*
+	Function: fs_makedir_rec_for
+		Recursively create directories for a file
+
+	Parameters:
+		path - File for which to create directories
+
+	Returns:
+		Returns 0 on success. Negative value on failure.
+*/
+int fs_makedir_rec_for(const char *path);
 
 /*
 	Function: fs_makedir
@@ -1298,6 +1476,103 @@ int str_utf8_encode(char *ptr, int chr);
 		- The string is treated as zero-terminated utf8 string.
 */
 int str_utf8_check(const char *str);
+
+/*
+	Function: str_utf8_stats
+		Determines the byte size and utf8 character count of a utf8 string.
+
+	Parameters:
+		str - Pointer to the string.
+		max_size - Maximum number of bytes to count.
+		max_count - Maximum number of utf8 characters to count.
+		size - Pointer to store size (number of non-zero bytes) of the string.
+		count - Pointer to store count of utf8 characters of the string.
+
+	Remarks:
+		- The string is treated as zero-terminated utf8 string.
+		- It's the user's responsibility to make sure the bounds are aligned.
+*/
+void str_utf8_stats(const char *str, int max_size, int max_count, int *size, int *count);
+
+/*
+	Function: str_next_token
+		Writes the next token after str into buf, returns the rest of the string.
+
+	Parameters:
+		str - Pointer to string.
+		delim - Delimiter for tokenization.
+		buffer - Buffer to store token in.
+		buffer_size - Size of the buffer.
+
+	Returns:
+		Pointer to rest of the string.
+
+	Remarks:
+		- The token is always null-terminated.
+*/
+
+const char *str_next_token(const char *str, const char *delim, char *buffer, int buffer_size);
+
+/*
+	Function: str_in_list
+		Checks if needle is in list delimited by delim
+
+	Parameters:
+		list - List
+		delim - List delimiter.
+		needle - Item that is being looked for.
+
+	Returns:
+		1 - Item is in list.
+		0 - Item isn't in list.
+*/
+int str_in_list(const char *list, const char *delim, const char *needle);
+
+/*
+	Function: bytes_be_to_int
+		Packs 4 big endian bytes into an int
+
+	Returns:
+		The packed int
+
+	Remarks:
+		- Assumes the passed array is 4 bytes
+		- Assumes int is 4 bytes
+*/
+int bytes_be_to_int(const unsigned char *bytes);
+
+/*
+	Function: int_to_bytes_be
+		Packs an int into 4 big endian bytes
+
+	Remarks:
+		- Assumes the passed array is 4 bytes
+		- Assumes int is 4 bytes
+*/
+void int_to_bytes_be(unsigned char *bytes, int value);
+
+/*
+	Function: bytes_be_to_uint
+		Packs 4 big endian bytes into an unsigned
+
+	Returns:
+		The packed unsigned
+
+	Remarks:
+		- Assumes the passed array is 4 bytes
+		- Assumes unsigned is 4 bytes
+*/
+unsigned bytes_be_to_uint(const unsigned char *bytes);
+
+/*
+	Function: uint_to_bytes_be
+		Packs an unsigned into 4 big endian bytes
+
+	Remarks:
+		- Assumes the passed array is 4 bytes
+		- Assumes unsigned is 4 bytes
+*/
+void uint_to_bytes_be(unsigned char *bytes, unsigned value);
 
 /*
 	Function: secure_random_init

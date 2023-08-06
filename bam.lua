@@ -16,7 +16,7 @@ function Script(name)
 	if family == "windows" then
 		return str_replace(name, "/", "\\")
 	end
-	return "python " .. name
+	return "python3 " .. name
 end
 
 function CHash(output, ...)
@@ -234,6 +234,9 @@ function build(settings)
 			launcher_settings.link.frameworks:Add("Cocoa")
 		end
 		server_settings.link.libs:Add("ssl")
+		server_settings.link.libs:Add("curl")
+		server_settings.link.libs:Add("crypto")
+		server_settings.link.libs:Add("dl")
 		server_settings.link.libs:Add("mysqlcppconn")
 		-- server_settings.link.libs:Add("mysqlclient") *cry I was did a whole system for it.
 
@@ -260,7 +263,7 @@ function build(settings)
 		end
 	end
 	
-	engine = Compile(engine_settings, Collect("src/engine/shared/*.cpp", "src/base/*.c"))
+	engine = Compile(engine_settings, Collect("src/engine/shared/*.cpp", "src/base/*.cpp"))
 	server = Compile(server_settings, Collect("src/engine/server/*.cpp"))
 	teeuniverses = Compile(server_settings, Collect("src/teeuniverses/*.cpp", "src/teeuniverses/components/*.cpp", "src/teeuniverses/system/*.cpp"))
 

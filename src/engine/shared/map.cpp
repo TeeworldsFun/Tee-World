@@ -41,6 +41,13 @@ public:
 	{
 		return m_DataFile.Crc();
 	}
+
+	virtual SHA256_DIGEST Sha256()
+	{
+		return m_DataFile.Sha256();
+	}
+
+	virtual CDataFileReader* GetFileReader() { return &m_DataFile; } // MapGen
 };
 
 extern IEngineMap *CreateEngineMap() { return new CMap; }

@@ -1,8 +1,7 @@
 #include "Account.h"
 
-CAccount::CAccount(CGameContext *pGameServer)
+void CAccount::OnInitWorld()
 {
-    m_pGameServer = pGameServer;
 }
 
 bool CAccount::Register(int ClientID, const char *Username, const char *Password)

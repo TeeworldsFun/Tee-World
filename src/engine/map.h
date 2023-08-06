@@ -3,6 +3,7 @@
 #ifndef ENGINE_MAP_H
 #define ENGINE_MAP_H
 
+#include <base/hash.h>
 #include "kernel.h"
 
 class IMap : public IInterface
@@ -16,6 +17,8 @@ public:
 	virtual void GetType(int Type, int *pStart, int *pNum) = 0;
 	virtual void *FindItem(int Type, int ID) = 0;
 	virtual int NumItems() = 0;
+	
+	virtual class CDataFileReader* GetFileReader() = 0; // MapGen
 };
 
 
@@ -26,6 +29,7 @@ public:
 	virtual bool Load(const char *pMapName) = 0;
 	virtual bool IsLoaded() = 0;
 	virtual void Unload() = 0;
+	virtual SHA256_DIGEST Sha256() = 0;
 	virtual unsigned Crc() = 0;
 };
 

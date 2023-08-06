@@ -16,8 +16,9 @@
 #include "gamecontroller.h"
 #include "gameworld.h"
 #include "player.h"
+#include "botengine.h"
 
-#include "GameCore/Account/Account.h"
+#include "GameCore/TDController.h"
 
 #ifdef _MSC_VER
 typedef __int32 int32_t;
@@ -60,7 +61,6 @@ class CGameContext : public IGameServer
 	CNetObjHandler m_NetObjHandler;
 	CTuningParams m_Tuning;
 	CDB *m_pDB;
-	class CAccount *m_pAccount;
 
 	static void ConLanguage(IConsole::IResult *pResult, void *pUserData);
 	static void ConAbout(IConsole::IResult *pResult, void *pUserData);
@@ -112,7 +112,6 @@ public:
 	CTuningParams *Tuning() { return &m_Tuning; }
 	virtual class CLayers *Layers() { return &m_Layers; }
 	CDB *DB() { return m_pDB; }
-	CAccount *Account() { return m_pAccount; }
 
 	CGameContext();
 	~CGameContext();
@@ -218,6 +217,14 @@ public:
 	// Zomb2
 	void OnZombie(int ClientID, int Zomb);
 	void OnZombieKill(int ClientID);
+
+	// Bot slots
+	virtual void DeleteBot(int i);
+	bool AddBot(int i, bool UseDropPlayer = false);
+	virtual bool ReplacePlayerByBot(int ClientID);
+	void CheckBotNumber();
+
+	class CBotEngine *m_pBotEngine;
 };
 
 inline int64_t CmaskAll() { return -1LL; }
