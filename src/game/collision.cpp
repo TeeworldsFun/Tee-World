@@ -165,30 +165,25 @@ void CCollision::MoveBox(vec2 *pInoutPos, vec2 *pInoutVel, vec2 Size, float Elas
 	float Distance = length(Vel);
 	int Max = (int)Distance;
 
-	if(Distance > 0.00001f)
+	if (Distance > 0.00001f)
 	{
-		//vec2 old_pos = pos;
-		float Fraction = 1.0f/(float)(Max+1);
-		for(int i = 0; i <= Max; i++)
+		float Fraction = 1.0f / (float)(Max + 1);
+		for (int i = 0; i <= Max; i++)
 		{
-			//float amount = i/(float)max;
-			//if(max == 0)
-				//amount = 0;
+			vec2 NewPos = Pos + Vel * Fraction; // TODO: this row is not nice
 
-			vec2 NewPos = Pos + Vel*Fraction; // TODO: this row is not nice
-
-			if(TestBox(vec2(NewPos.x, NewPos.y), Size))
+			if (TestBox(vec2(NewPos.x, NewPos.y), Size))
 			{
 				int Hits = 0;
 
-				if(TestBox(vec2(Pos.x, NewPos.y), Size))
+				if (TestBox(vec2(Pos.x, NewPos.y), Size))
 				{
 					NewPos.y = Pos.y;
 					Vel.y *= -Elasticity;
 					Hits++;
 				}
 
-				if(TestBox(vec2(NewPos.x, Pos.y), Size))
+				if (TestBox(vec2(NewPos.x, Pos.y), Size))
 				{
 					NewPos.x = Pos.x;
 					Vel.x *= -Elasticity;
@@ -197,7 +192,7 @@ void CCollision::MoveBox(vec2 *pInoutPos, vec2 *pInoutVel, vec2 Size, float Elas
 
 				// neither of the tests got a collision.
 				// this is a real _corner case_!
-				if(Hits == 0)
+				if (Hits == 0)
 				{
 					NewPos.y = Pos.y;
 					Vel.y *= -Elasticity;

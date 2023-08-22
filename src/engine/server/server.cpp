@@ -1520,7 +1520,7 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	}
 
 	// gametype
-	p.AddString("MRPG", 16);
+	p.AddString("Tee:World", 16);
 
 	// flags
 	ADD_INT(p, g_Config.m_Password[0] ? SERVER_FLAG_PASSWORD : 0);
