@@ -4,12 +4,11 @@
 #include <game/server/gamecontext.h>
 #include "pickup.h"
 
-CPickup::CPickup(CGameWorld *pGameWorld, int Type, int SubType, vec2 Pivot, vec2 RelPos, int PosEnv)
-: CAnimatedEntity(pGameWorld, CGameWorld::ENTTYPE_PICKUP, Pivot, RelPos, PosEnv)
+CPickup::CPickup(CGameWorld *pGameWorld, int Type, int SubType, vec2 Pos)
+: CEntity(pGameWorld, CGameWorld::ENTTYPE_PICKUP, Pos)
 {
 	m_Type = Type;
 	m_Subtype = SubType;
-	m_ProximityRadius = PickupPhysSize;
 
 	Reset();
 
@@ -26,8 +25,6 @@ void CPickup::Reset()
 
 void CPickup::Tick()
 {
-	CAnimatedEntity::Tick();
-
 	// wait for respawn
 	if(m_SpawnTick > 0)
 	{
@@ -130,7 +127,7 @@ void CPickup::Snap(int SnappingClient)
 	if(m_SpawnTick != -1 || NetworkClipped(SnappingClient))
 		return;
 
-	CNetObj_Pickup *pP = static_cast<CNetObj_Pickup *>(Server()->SnapNewItem(NETOBJTYPE_PICKUP, m_ID, sizeof(CNetObj_Pickup)));
+	CNetObj_Pickup *pP = static_cast<CNetObj_Pickup *>(Server()->SnapNewItem(NETOBJTYPE_PICKUP, GetID(), sizeof(CNetObj_Pickup)));
 	if(!pP)
 		return;
 

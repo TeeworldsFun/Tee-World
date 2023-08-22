@@ -9,6 +9,8 @@
 #include <utility>
 #include <engine/shared/config.h>
 
+#include <cstring>
+
 //////////////////////////////////////////////////
 // game world
 //////////////////////////////////////////////////
@@ -50,7 +52,7 @@ int CGameWorld::FindEntities(vec2 Pos, float Radius, CEntity **ppEnts, int Max, 
 	int Num = 0;
 	for(CEntity *pEnt = m_apFirstEntityTypes[Type];	pEnt; pEnt = pEnt->m_pNextTypeEntity)
 	{
-		if(distance(pEnt->m_Pos, Pos) < Radius+pEnt->m_ProximityRadius)
+		if(distance(pEnt->m_Pos, Pos) < Radius+pEnt->GetProximityRadius())
 		{
 			if(ppEnts)
 				ppEnts[Num] = pEnt;
@@ -210,7 +212,7 @@ CCharacter *CGameWorld::IntersectCharacter(vec2 Pos0, vec2 Pos1, float Radius, v
 
 		vec2 IntersectPos = closest_point_on_line(Pos0, Pos1, p->m_Pos);
 		float Len = distance(p->m_Pos, IntersectPos);
-		if(Len < p->m_ProximityRadius+Radius)
+		if(Len < p->GetProximityRadius()+Radius)
 		{
 			Len = distance(Pos0, IntersectPos);
 			if(Len < ClosestLen)
@@ -232,78 +234,65 @@ bool distCompare(std::pair<float,int> a, std::pair<float,int> b)
 
 void CGameWorld::UpdatePlayerMaps()
 {
-	if (Server()->Tick() % g_Config.m_SvMapUpdateRate != 0) return;
+	if (Server()->Tick() % g_Config.m_SvMapUpdateRate != 0)
+		return;
 
-	std::pair<float,int> dist[MAX_CLIENTS];
-	for (int i = 0; i < MAX_CLIENTS; i++)
+	std::pair<float, int> Dist[MAX_CLIENTS];
+	for (int ClientID = 0; ClientID < MAX_PLAYERS; ClientID++)
 	{
-		if (!Server()->ClientIngame(i)) continue;
-		int* map = Server()->GetIdMap(i);
-
-		// compute distances
-		for (int j = 0; j < MAX_CLIENTS; j++)
-		{
-			dist[j].second = j;
-			dist[j].first = 1e10;
-			if (!Server()->ClientIngame(j))
+		CPlayer *pPlayer = GameServer()->m_apPlayers[ClientID];
+		int ClientWorldID = Server()->GetClientWorldID(ClientID);
+		if (!Server()->ClientIngame(ClientID) || ClientWorldID != GameServer()->GetWorldID() || !pPlayer)
 				continue;
-			/*CCharacter* ch = GameServer()->m_apPlayers[j]->GetCharacter();
-			if (!ch)
-				continue;
-			// copypasted chunk from character.cpp Snap() follows
-			int SnappingClient = i;
-			CCharacter* SnapChar = GameServer()->GetPlayerChar(SnappingClient);
-			if(SnapChar &&
-				GameServer()->m_apPlayers[SnappingClient]->GetTeam() != -1 &&
-				!ch->CanCollide(SnappingClient) &&
-				(!GameServer()->m_apPlayers[SnappingClient]->m_IsUsingDDRaceClient ||
-					(GameServer()->m_apPlayers[SnappingClient]->m_IsUsingDDRaceClient &&
-					!GameServer()->m_apPlayers[SnappingClient]->m_ShowOthers
-                                	)
-				)
-                        ) continue;*/
 
-			dist[j].first = distance(GameServer()->m_apPlayers[i]->m_ViewPos, GameServer()->m_apPlayers[j]->m_ViewPos);
-		}
+		int *pMap = Server()->GetIdMap(ClientID);
 
-		// always send the player himself
-		dist[i].first = 0;
+		// always send the player themselves
+		Dist[ClientID].first = 0;
 
 		// compute reverse map
-		int rMap[MAX_CLIENTS];
-		for (int j = 0; j < MAX_CLIENTS; j++)
+		int aReverseMap[MAX_CLIENTS];
+		std::memset(aReverseMap, -1, sizeof(int) * MAX_CLIENTS);
+		for (int j = MAX_PLAYERS; j < VANILLA_MAX_CLIENTS; j++)
 		{
-			rMap[j] = -1;
-		}
-		for (int j = 0; j < VANILLA_MAX_CLIENTS; j++)
-		{
-			if (map[j] == -1) continue;
-			if (dist[map[j]].first > 1e9) map[j] = -1;
-			else rMap[map[j]] = j;
-		}
+			if (pMap[j] == -1)
+				continue;
 
-		std::nth_element(&dist[0], &dist[VANILLA_MAX_CLIENTS - 1], &dist[MAX_CLIENTS], distCompare);
-
-		int mapc = 0;
-		int demand = 0;
-		for (int j = 0; j < VANILLA_MAX_CLIENTS - 1; j++)
-		{
-			int k = dist[j].second;
-			if (rMap[k] != -1 || dist[j].first > 1e9) continue;
-			while (mapc < VANILLA_MAX_CLIENTS && map[mapc] != -1) mapc++;
-			if (mapc < VANILLA_MAX_CLIENTS - 1)
-				map[mapc] = k;
+			if (Dist[pMap[j]].first > 5e9f)
+				pMap[j] = -1;
 			else
-				if (dist[j].first < 1300) // dont bother freeing up space for players which are too far to be displayed anyway
-					demand++;
+				aReverseMap[pMap[j]] = j;
 		}
+
+		std::nth_element(&Dist[MAX_PLAYERS], &Dist[VANILLA_MAX_CLIENTS - 1], &Dist[MAX_CLIENTS], distCompare);
+
+		int Mapc = MAX_PLAYERS;
+		int Demand = 0;
+		for (int j = MAX_PLAYERS; j < VANILLA_MAX_CLIENTS - 1; j++)
+		{
+			int k = Dist[j].second;
+
+			if (aReverseMap[k] != -1 || Dist[j].first > 5e9f)
+				continue;
+
+			while (Mapc < VANILLA_MAX_CLIENTS && pMap[Mapc] != -1)
+				Mapc++;
+
+			if (Mapc < VANILLA_MAX_CLIENTS - 1)
+				pMap[Mapc] = k;
+			else
+				Demand++;
+		}
+
 		for (int j = MAX_CLIENTS - 1; j > VANILLA_MAX_CLIENTS - 2; j--)
 		{
-			int k = dist[j].second;
-			if (rMap[k] != -1 && demand-- > 0)
-				map[rMap[k]] = -1;
+			int k = Dist[j].second;
+
+			if (aReverseMap[k] != -1 && Demand-- > 0)
+				pMap[aReverseMap[k]] = -1;
 		}
-		map[VANILLA_MAX_CLIENTS - 1] = -1; // player with empty name to say chat msgs
+
+		pMap[VANILLA_MAX_CLIENTS - 1] = -1; // player with empty name to say chat msgs
 	}
 }
 
@@ -320,7 +309,7 @@ CCharacter *CGameWorld::ClosestCharacter(vec2 Pos, float Radius, CEntity *pNotTh
 			continue;
 
 		float Len = distance(Pos, p->m_Pos);
-		if(Len < p->m_ProximityRadius+Radius)
+		if(Len < p->GetProximityRadius()+Radius)
 		{
 			if(Len < ClosestRange)
 			{

@@ -1,22 +1,23 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#ifndef GAME_SERVER_YATD_COMPONENT_H
-#define GAME_SERVER_YATD_COMPONENT_H
+/* Kurosio */
+#ifndef GAME_SERVER_TW_COMPONENT_H
+#define GAME_SERVER_TW_COMPONENT_H
 
-class YatdComponent
+class TWorldComponent
 {
 protected:
 	class CGameContext* m_GameServer;
 	class IServer* m_pServer;
-	class YatdController* m_Job;
-	friend YatdController; // provide access for the controller
+	class TWorldController* m_Job;
+	friend TWorldController; // provide access for the controller
 
 	CGameContext* GameServer() const { return m_GameServer; }
 	IServer* Server() const { return m_pServer; }
-	YatdController* Job() const { return m_Job; }
+	TWorldController* Job() const { return m_Job; }
 
 public:
-	virtual ~YatdComponent() {}
+	virtual ~TWorldComponent() {}
 
 private:
 	virtual void OnInitWorld(const char* pWhereLocalWorld) {};
@@ -28,3 +29,4 @@ private:
 };
 
 #endif
+/* Kurosio */

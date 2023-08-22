@@ -5,7 +5,7 @@
 #include "laser.h"
 
 CLaser::CLaser(CGameWorld *pGameWorld, vec2 Pos, vec2 Direction, float StartEnergy, int Owner)
-: CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER)
+: CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER, Pos)
 {
 	m_Pos = Pos;
 	m_Owner = Owner;
@@ -101,7 +101,7 @@ void CLaser::Snap(int SnappingClient)
 	if(NetworkClipped(SnappingClient))
 		return;
 
-	CNetObj_Laser *pObj = static_cast<CNetObj_Laser *>(Server()->SnapNewItem(NETOBJTYPE_LASER, m_ID, sizeof(CNetObj_Laser)));
+	CNetObj_Laser *pObj = static_cast<CNetObj_Laser *>(Server()->SnapNewItem(NETOBJTYPE_LASER, GetID(), sizeof(CNetObj_Laser)));
 	if(!pObj)
 		return;
 

@@ -1,0 +1,34 @@
+{"worlds":[
+	{
+		"name": "Bad Dreams and Mornings",
+		"path": "dm1.map"
+	},	
+	{
+		"name": "Port Skandia",
+		"path": "dm2.map"
+	},	
+	{
+		"name": "Logging Site",
+		"path": "dm6.map"
+	},	
+	{
+		"name": "Statue Ruins",
+		"path": "dm7.map"
+	},	
+	{
+		"name": "Abandoned mine",
+		"path": "dm8.map"
+	},	
+	{
+		"name": "Helonia Coast",
+		"path": "dm9.map"
+	},	
+	{
+		"name": "Helonia region Azuria",
+		"path": "ctf1.map"
+	},	
+	{
+		"name": "Helonia region Port",
+		"path": "ctf2.map"
+	}
+]}

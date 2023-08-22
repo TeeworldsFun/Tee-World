@@ -1690,27 +1690,42 @@ int net_socket_read_wait(NETSOCKET sock, int time)
 	sockid = 0;
 
 	FD_ZERO(&readfds); // NOLINT(clang-analyzer-security.insecureAPI.bzero)
-	if(sock->ipv4sock >= 0)
+	if (sock->ipv4sock >= 0)
 	{
 		FD_SET(sock->ipv4sock, &readfds);
 		sockid = sock->ipv4sock;
 	}
-	if(sock->ipv6sock >= 0)
+	if (sock->ipv6sock >= 0)
 	{
 		FD_SET(sock->ipv6sock, &readfds);
-		if(sock->ipv6sock > sockid)
+		if (sock->ipv6sock > sockid)
 			sockid = sock->ipv6sock;
 	}
+#if defined(CONF_WEBSOCKETS)
+	if (sock->web_ipv4sock >= 0)
+	{
+		int maxfd = websocket_fd_set(sock->web_ipv4sock, &readfds);
+		if (maxfd > sockid)
+		{
+			sockid = maxfd;
+			FD_SET(sockid, &readfds);
+		}
+	}
+#endif
 
 	/* don't care about writefds and exceptfds */
-	if(time < 0)
+	if (time < 0)
 		select(sockid + 1, &readfds, NULL, NULL, NULL);
 	else
 		select(sockid + 1, &readfds, NULL, NULL, &tv);
 
-	if(sock->ipv4sock >= 0 && FD_ISSET(sock->ipv4sock, &readfds))
+	if (sock->ipv4sock >= 0 && FD_ISSET(sock->ipv4sock, &readfds))
 		return 1;
-	if(sock->ipv6sock >= 0 && FD_ISSET(sock->ipv6sock, &readfds))
+#if defined(CONF_WEBSOCKETS)
+	if (sock->web_ipv4sock >= 0 && FD_ISSET(sockid, &readfds))
+		return 1;
+#endif
+	if (sock->ipv6sock >= 0 && FD_ISSET(sock->ipv6sock, &readfds))
 		return 1;
 
 	return 0;

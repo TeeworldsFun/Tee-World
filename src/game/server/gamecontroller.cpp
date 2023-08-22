@@ -13,7 +13,7 @@ IGameController::IGameController(class CGameContext *pGameServer)
 {
 	m_pGameServer = pGameServer;
 	m_pServer = m_pGameServer->Server();
-	m_pGameType = "unknown";
+	m_pGameType = "Tee:World";
 
 	//
 	DoWarmup(g_Config.m_SvWarmup);
@@ -55,7 +55,7 @@ float IGameController::EvaluateSpawnPos(CSpawnEval *pEval, vec2 Pos)
 		if (pEval->m_FriendlyTeam != -1 && pC->GetPlayer()->GetTeam() == pEval->m_FriendlyTeam)
 			Scoremod = 0.5f;
 
-		float d = distance(Pos, pC->m_Pos);
+		float d = distance(Pos, pC->GetPos());
 		Score += Scoremod * (d == 0 ? 1000000000.0f : 1.0f / d);
 	}
 
@@ -77,7 +77,7 @@ void IGameController::EvaluateSpawnType(CSpawnEval *pEval, int Type)
 			Result = Index;
 			for (int c = 0; c < Num; ++c)
 				if (GameServer()->Collision()->CheckPoint(m_aaSpawnPoints[Type][i] + Positions[Index]) ||
-					distance(aEnts[c]->m_Pos, m_aaSpawnPoints[Type][i] + Positions[Index]) <= aEnts[c]->m_ProximityRadius)
+					distance(aEnts[c]->GetPos(), m_aaSpawnPoints[Type][i] + Positions[Index]) <= aEnts[c]->GetProximityRadius())
 				{
 					Result = -1;
 					break;
@@ -129,47 +129,46 @@ bool IGameController::CanSpawn(int Team, vec2 *pOutPos)
 	return Eval.m_Got;
 }
 
-bool IGameController::OnEntity(const char *pName, vec2 Pivot, vec2 P0, vec2 P1, vec2 P2, vec2 P3, int PosEnv)
+bool IGameController::OnEntity(int Index, vec2 Pos)
 {
-	vec2 Pos = (P0 + P1 + P2 + P3) / 4.0f;
 	int Type = -1;
 	int SubType = 0;
-
-	if (str_comp(pName, "spawn") == 0)
-		m_aaSpawnPoints[0][m_aNumSpawnPoints[0]++] = Pos;
-	else if (str_comp(pName, "spawnRed") == 0)
-		m_aaSpawnPoints[1][m_aNumSpawnPoints[1]++] = Pos;
-	else if (str_comp(pName, "spawnBlue") == 0)
-		m_aaSpawnPoints[2][m_aNumSpawnPoints[2]++] = Pos;
-	else if (str_comp(pName, "armor") == 0)
-		Type = POWERUP_ARMOR;
-	else if (str_comp(pName, "health") == 0)
-		Type = POWERUP_HEALTH;
-	else if (str_comp(pName, "shotgun") == 0)
+	switch (Index)
 	{
+	case ENTITY_SPAWN:
+		m_aaSpawnPoints[TEAM_RED][m_aNumSpawnPoints[TEAM_RED]++] = Pos;
+		break;
+	case ENTITY_SPAWN_RED:
+		m_aaSpawnPoints[TEAM_RED][m_aNumSpawnPoints[TEAM_RED]++] = Pos;
+		break;
+	case ENTITY_SPAWN_BLUE:
+		m_aaSpawnPoints[TEAM_BLUE][m_aNumSpawnPoints[TEAM_BLUE]++] = Pos;
+		break;
+	case ENTITY_ARMOR_1:
+		Type = POWERUP_ARMOR;
+		break;
+	case ENTITY_HEALTH_1:
+		Type = POWERUP_HEALTH;
+		break;
+	case ENTITY_WEAPON_SHOTGUN:
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_SHOTGUN;
-	}
-	else if (str_comp(pName, "grenade") == 0)
-	{
+		break;
+	case ENTITY_WEAPON_GRENADE:
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_GRENADE;
-	}
-	else if (str_comp(pName, "rifle") == 0)
-	{
+		break;
+	case ENTITY_WEAPON_RIFLE:
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_RIFLE;
-	}
-	else if (str_comp(pName, "ninja") == 0 && g_Config.m_SvPowerups)
-	{
-		Type = POWERUP_NINJA;
-		SubType = WEAPON_NINJA;
+		break;
+	default:
+		break;
 	}
 
 	if (Type != -1)
 	{
-		CPickup *pPickup = new CPickup(&GameServer()->m_World, Type, SubType, Pivot, Pos - Pivot, PosEnv);
-		pPickup->m_Pos = Pos;
+		new CPickup(&GameServer()->m_World, Type, SubType, Pos);
 		return true;
 	}
 
@@ -233,10 +232,6 @@ void IGameController::StartRound()
 		GameServer()->OnZombieKill(i);
 	m_Wave++;
 	StartWave(m_Wave);
-
-	char aBuf[256];
-	str_format(aBuf, sizeof(aBuf), "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
-	GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
 }
 
 void IGameController::ChangeMap(const char *pToMap)

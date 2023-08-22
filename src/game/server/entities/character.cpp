@@ -39,9 +39,8 @@ MACRO_ALLOC_POOL_ID_IMPL(CCharacter, MAX_CLIENTS)
 
 // Character, "physical" player's part
 CCharacter::CCharacter(CGameWorld *pWorld)
-	: CEntity(pWorld, CGameWorld::ENTTYPE_CHARACTER)
+	: CEntity(pWorld, CGameWorld::ENTTYPE_CHARACTER, vec2(0, 0), ms_PhysSize)
 {
-	m_ProximityRadius = ms_PhysSize;
 	m_Health = 0;
 	m_Armor = 0;
 }
@@ -71,9 +70,12 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 	m_ReckoningTick = 0;
 	mem_zero(&m_SendCore, sizeof(m_SendCore));
 	mem_zero(&m_ReckoningCore, sizeof(m_ReckoningCore));
+	m_Core.m_WorldID = m_pPlayer->GetPlayerWorldID();
 
+	dbg_msg("h", "%d, %d", m_pPlayer->GetCID(), m_Core.m_WorldID);
 	GameServer()->m_World.InsertEntity(this);
 	m_Alive = true;
+	m_NumInputs = 0;
 
 	GameServer()->m_pController->OnCharacterSpawn(this);
 
@@ -122,10 +124,11 @@ void CCharacter::SetWeapon(int W)
 
 bool CCharacter::IsGrounded()
 {
-	if (GameServer()->Collision()->CheckPoint(m_Pos.x + m_ProximityRadius / 2, m_Pos.y + m_ProximityRadius / 2 + 5))
+	if (GameServer()->Collision()->CheckPoint(m_Pos.x + GetProximityRadius() / 2, m_Pos.y + GetProximityRadius() / 2 + 5))
 		return true;
-	if (GameServer()->Collision()->CheckPoint(m_Pos.x - m_ProximityRadius / 2, m_Pos.y + m_ProximityRadius / 2 + 5))
+	if (GameServer()->Collision()->CheckPoint(m_Pos.x - GetProximityRadius() / 2, m_Pos.y + GetProximityRadius() / 2 + 5))
 		return true;
+
 	return false;
 }
 
@@ -160,7 +163,7 @@ void CCharacter::HandleNinja()
 		// Set velocity
 		m_Core.m_Vel = m_Ninja.m_ActivationDir * g_pData->m_Weapons.m_Ninja.m_Velocity;
 		vec2 OldPos = m_Pos;
-		GameServer()->Collision()->MoveBox(&m_Core.m_Pos, &m_Core.m_Vel, vec2(m_ProximityRadius, m_ProximityRadius), 0.f);
+		GameServer()->Collision()->MoveBox(&m_Core.m_Pos, &m_Core.m_Vel, vec2(GetProximityRadius(), GetProximityRadius()), 0.f);
 
 		// reset velocity so the client doesn't predict stuff
 		m_Core.m_Vel = vec2(0.f, 0.f);
@@ -169,7 +172,7 @@ void CCharacter::HandleNinja()
 		{
 			CCharacter *aEnts[MAX_CLIENTS];
 			vec2 Dir = m_Pos - OldPos;
-			float Radius = m_ProximityRadius * 2.0f;
+			float Radius = GetProximityRadius() * 2.0f;
 			vec2 Center = OldPos + Dir * 0.5f;
 			int Num = GameServer()->m_World.FindEntities(Center, Radius, (CEntity **)aEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 
@@ -189,7 +192,7 @@ void CCharacter::HandleNinja()
 					continue;
 
 				// check so we are sufficiently close
-				if (distance(aEnts[i]->m_Pos, m_Pos) > (m_ProximityRadius * 2.0f))
+				if (distance(aEnts[i]->m_Pos, m_Pos) > (GetProximityRadius() * 2.0f))
 					continue;
 
 				// Hit a player, give him damage and stuffs...
@@ -299,7 +302,7 @@ void CCharacter::FireWeapon()
 		return;
 	}
 
-	vec2 ProjStartPos = m_Pos + Direction * m_ProximityRadius * 0.75f;
+	vec2 ProjStartPos = m_Pos + Direction * GetProximityRadius() * 0.75f;
 
 	switch (m_ActiveWeapon)
 	{
@@ -311,7 +314,7 @@ void CCharacter::FireWeapon()
 
 		CCharacter *apEnts[MAX_CLIENTS];
 		int Hits = 0;
-		int Num = GameServer()->m_World.FindEntities(ProjStartPos, m_ProximityRadius * 0.5f, (CEntity **)apEnts,
+		int Num = GameServer()->m_World.FindEntities(ProjStartPos, GetProximityRadius() * 0.5f, (CEntity **)apEnts,
 													 MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 
 		for (int i = 0; i < Num; ++i)
@@ -323,7 +326,7 @@ void CCharacter::FireWeapon()
 
 			// set his velocity to fast upward (for now)
 			if (length(pTarget->m_Pos - ProjStartPos) > 0.0f)
-				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * m_ProximityRadius * 0.5f);
+				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f);
 			else
 				GameServer()->CreateHammerHit(ProjStartPos);
 
@@ -504,7 +507,6 @@ void CCharacter::OnPredictedInput(CNetObj_PlayerInput *pNewInput)
 
 	// copy new input
 	mem_copy(&m_Input, pNewInput, sizeof(m_Input));
-	m_NumInputs++;
 
 	// it is not allowed to aim in the center
 	if (m_Input.m_TargetX == 0 && m_Input.m_TargetY == 0)
@@ -515,12 +517,13 @@ void CCharacter::OnDirectInput(CNetObj_PlayerInput *pNewInput)
 {
 	mem_copy(&m_LatestPrevInput, &m_LatestInput, sizeof(m_LatestInput));
 	mem_copy(&m_LatestInput, pNewInput, sizeof(m_LatestInput));
+	m_NumInputs++;
 
 	// it is not allowed to aim in the center
 	if (m_LatestInput.m_TargetX == 0 && m_LatestInput.m_TargetY == 0)
 		m_LatestInput.m_TargetY = -1;
 
-	if (m_NumInputs > 2 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
+	if (m_NumInputs > 1 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
 	{
 		HandleWeaponSwitch();
 		FireWeapon();
@@ -563,20 +566,10 @@ void CCharacter::Tick()
 	m_Core.Tick(true, m_pPlayer->GetNextTuningParams());
 
 	// handle death-tiles and leaving gamelayer
-	if (GameServer()->Collision()->GetCollisionAt(m_Pos.x + m_ProximityRadius / 3.f, m_Pos.y - m_ProximityRadius / 3.f) & CCollision::COLFLAG_DEATH ||
-		GameServer()->Collision()->GetCollisionAt(m_Pos.x + m_ProximityRadius / 3.f, m_Pos.y + m_ProximityRadius / 3.f) & CCollision::COLFLAG_DEATH ||
-		GameServer()->Collision()->GetCollisionAt(m_Pos.x - m_ProximityRadius / 3.f, m_Pos.y - m_ProximityRadius / 3.f) & CCollision::COLFLAG_DEATH ||
-		GameServer()->Collision()->GetCollisionAt(m_Pos.x - m_ProximityRadius / 3.f, m_Pos.y + m_ProximityRadius / 3.f) & CCollision::COLFLAG_DEATH ||
-		GameLayerClipped(m_Pos))
-	{
-		Die(m_pPlayer->GetCID(), WEAPON_WORLD);
-	}
-
-	// handle death-zones
-	if (GameServer()->Collision()->GetZoneValueAt(GameServer()->m_ZoneHandle_TeeWorlds, m_Pos.x + m_ProximityRadius / 3.f, m_Pos.y - m_ProximityRadius / 3.f) == TILE_DEATH ||
-		GameServer()->Collision()->GetZoneValueAt(GameServer()->m_ZoneHandle_TeeWorlds, m_Pos.x + m_ProximityRadius / 3.f, m_Pos.y + m_ProximityRadius / 3.f) == TILE_DEATH ||
-		GameServer()->Collision()->GetZoneValueAt(GameServer()->m_ZoneHandle_TeeWorlds, m_Pos.x - m_ProximityRadius / 3.f, m_Pos.y - m_ProximityRadius / 3.f) == TILE_DEATH ||
-		GameServer()->Collision()->GetZoneValueAt(GameServer()->m_ZoneHandle_TeeWorlds, m_Pos.x - m_ProximityRadius / 3.f, m_Pos.y + m_ProximityRadius / 3.f) == TILE_DEATH ||
+	if (GameServer()->Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) & CCollision::COLFLAG_DEATH ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) & CCollision::COLFLAG_DEATH ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) & CCollision::COLFLAG_DEATH ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) & CCollision::COLFLAG_DEATH ||
 		GameLayerClipped(m_Pos))
 	{
 		Die(m_pPlayer->GetCID(), WEAPON_WORLD);
@@ -585,6 +578,12 @@ void CCharacter::Tick()
 	// handle Weapons
 	HandleWeapons();
 
+	if (GameServer()->Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) & CCollision::COLFLAG_SOLID ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) & CCollision::COLFLAG_SOLID ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) & CCollision::COLFLAG_SOLID ||
+		GameServer()->Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) & CCollision::COLFLAG_SOLID ||
+		GameLayerClipped(m_Pos))
+		dbg_msg("sda", "yes");
 	// Previnput
 	m_PrevInput = m_Input;
 	return;

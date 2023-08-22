@@ -47,6 +47,8 @@
 #include <cstring> //fixes memset error
 #endif
 
+#include "multi_worlds.h"
+
 static const char *StrLtrim(const char *pStr)
 {
 	while (*pStr && *pStr >= 0 && *pStr <= 32)
@@ -290,15 +292,11 @@ CServer::CServer() : m_DemoRecorder(&m_SnapshotDelta)
 {
 	m_TickSpeed = SERVER_TICK_SPEED;
 
-	m_pGameServer = 0;
-
 	m_CurrentGameTick = 0;
 	m_RunServer = 1;
 
-	m_pCurrentMapData = 0;
-	m_CurrentMapSize = 0;
-
 	m_MapReload = 0;
+	m_HeavyReload = false;
 
 	m_RconClientID = IServer::RCON_CID_SERV;
 	m_RconAuthLevel = AUTHED_ADMIN;
@@ -309,6 +307,7 @@ CServer::CServer() : m_DemoRecorder(&m_SnapshotDelta)
 	m_ServerInfoNeedsUpdate = false;
 
 	m_pRegister = nullptr;
+	m_pMultiWorlds = new CMultiWorlds;
 
 	Init();
 }
@@ -316,9 +315,56 @@ CServer::CServer() : m_DemoRecorder(&m_SnapshotDelta)
 CServer::~CServer()
 {
 	delete m_pRegister;
+	delete m_pMultiWorlds;
 }
 
-int CServer::TrySetClientName(int ClientID, const char *pName)
+IGameServer *CServer::GameServer(int WorldID)
+{
+	if (!MultiWorlds()->IsValid(WorldID))
+		return MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_pGameServer;
+	return MultiWorlds()->GetWorld(WorldID)->m_pGameServer;
+}
+
+IGameServer *CServer::GameServerPlayer(int ClientID)
+{
+	return GameServer(GetClientWorldID(ClientID));
+}
+
+int CServer::GetWorldsSize() const
+{
+	return MultiWorlds()->GetSizeInitilized();
+}
+
+void CServer::ChangeWorld(int ClientID, int NewWorldID)
+{
+	if (ClientID < 0 || ClientID >= MAX_PLAYERS || NewWorldID == m_aClients[ClientID].m_WorldID || !MultiWorlds()->IsValid(NewWorldID) || m_aClients[ClientID].m_State < CClient::STATE_READY)
+		return;
+
+	m_aClients[ClientID].m_OldWorldID = m_aClients[ClientID].m_WorldID;
+	GameServer(m_aClients[ClientID].m_OldWorldID)->PrepareClientChangeWorld(ClientID);
+
+	m_aClients[ClientID].m_WorldID = NewWorldID;
+	GameServer(m_aClients[ClientID].m_WorldID)->PrepareClientChangeWorld(ClientID);
+
+	int *pIdMap = GetIdMap(ClientID);
+	memset(pIdMap, -1, sizeof(int) * VANILLA_MAX_CLIENTS);
+	pIdMap[0] = ClientID;
+
+	m_aClients[ClientID].Reset();
+	m_aClients[ClientID].m_IsChangesWorld = true;
+	m_aClients[ClientID].m_State = CClient::STATE_CONNECTING;
+	SendMap(ClientID);
+}
+
+int CServer::GetClientWorldID(int ClientID)
+{
+	if (ClientID < 0 || ClientID >= MAX_CLIENTS || m_aClients[ClientID].m_State < CClient::STATE_READY)
+		return MAIN_WORLD_ID;
+
+	return m_aClients[ClientID].m_WorldID;
+}
+
+int CServer::TrySetClientName(int ClientID, const char *pName, bool IsBot)
 {
 	char aTrimmedName[64];
 
@@ -339,6 +385,11 @@ int CServer::TrySetClientName(int ClientID, const char *pName)
 	Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
 	pName = aTrimmedName;
 
+	if (IsBot)
+	{
+		str_copy(m_aClients[ClientID].m_aName, pName, MAX_NAME_LENGTH);
+		return 0;
+	}
 	// make sure that two clients doesn't have the same name
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		if (i != ClientID && m_aClients[i].m_State >= CClient::STATE_READY && ClientID < MAX_PLAYERS)
@@ -352,7 +403,7 @@ int CServer::TrySetClientName(int ClientID, const char *pName)
 	return 0;
 }
 
-void CServer::SetClientName(int ClientID, const char *pName)
+void CServer::SetClientName(int ClientID, const char *pName, bool IsBot)
 {
 	if (ClientID < 0 || ClientID >= MAX_CLIENTS || m_aClients[ClientID].m_State < CClient::STATE_READY)
 		return;
@@ -363,14 +414,14 @@ void CServer::SetClientName(int ClientID, const char *pName)
 	char aCleanName[MAX_NAME_LENGTH];
 	str_copy(aCleanName, pName, sizeof(aCleanName));
 
-	if (TrySetClientName(ClientID, aCleanName))
+	if (TrySetClientName(ClientID, aCleanName, IsBot))
 	{
 		// auto rename
 		for (int i = 1;; i++)
 		{
 			char aNameTry[MAX_NAME_LENGTH];
 			str_format(aNameTry, sizeof(aCleanName), "(%d)%s", i, aCleanName);
-			if (TrySetClientName(ClientID, aNameTry) == 0)
+			if (TrySetClientName(ClientID, aNameTry, IsBot) == 0)
 				break;
 		}
 	}
@@ -450,6 +501,7 @@ int CServer::Init()
 
 	m_CurrentGameTick = 0;
 
+	_StoreMultiworldIdentifiableStaticData::Init((IServer *)this);
 	return 0;
 }
 
@@ -576,93 +628,83 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 	return false;
 }
 
-int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientID)
+int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientID, int64 Mask, int WorldID)
 {
+	if (!pMsg)
+		return -1;
+
+	if (ClientID != -1 && (ClientID < 0 || ClientID >= MAX_PLAYERS || m_aClients[ClientID].m_State == CClient::STATE_EMPTY || m_aClients[ClientID].m_Quitting))
+		return 0;
+
 	CNetChunk Packet;
 	mem_zero(&Packet, sizeof(CNetChunk));
+	Packet.m_ClientID = ClientID;
+	Packet.m_pData = pMsg->Data();
+	Packet.m_DataSize = pMsg->Size();
+
 	if (Flags & MSGFLAG_VITAL)
 		Packet.m_Flags |= NETSENDFLAG_VITAL;
 	if (Flags & MSGFLAG_FLUSH)
 		Packet.m_Flags |= NETSENDFLAG_FLUSH;
 
-	if (ClientID < 0)
+	if (!(Flags & MSGFLAG_NOSEND))
 	{
-		CPacker Pack6;
-		if (RepackMsg(pMsg, Pack6, false))
-			return -1;
-
-		// write message to demo recorders
-		if (!(Flags & MSGFLAG_NORECORD))
+		if (ClientID == -1)
 		{
-			m_DemoRecorder.RecordMessage(Pack6.Data(), Pack6.Size());
-		}
+			CPacker Pack;
+			if (RepackMsg(pMsg, Pack, false))
+				return -1;
 
-		if (!(Flags & MSGFLAG_NOSEND))
-		{
-			for (int i = 0; i < MAX_CLIENTS; i++)
+			for (int i = 0; i < MAX_PLAYERS; i++)
 			{
-				if (m_aClients[i].m_State == CClient::STATE_INGAME && !m_aClients[i].m_IsBot)
+				if (m_aClients[i].m_State == CClient::STATE_INGAME && !m_aClients[i].m_Quitting)
 				{
-					CPacker *pPack = &Pack6;
+					// skip what is not included in the mask
+					if (Mask != -1 && (Mask & (int64)1 << i) == 0)
+						continue;
+
+					const CPacker *pPack = &Pack;
 					Packet.m_pData = pPack->Data();
 					Packet.m_DataSize = pPack->Size();
+					if (WorldID != -1)
+					{
+						if (m_aClients[i].m_WorldID == WorldID)
+						{
+							Packet.m_ClientID = i;
+							m_NetServer.Send(&Packet);
+						}
+						continue;
+					}
+
 					Packet.m_ClientID = i;
 					m_NetServer.Send(&Packet);
 				}
 			}
 		}
-	}
-	else
-	{
-		CPacker Pack;
-		if (RepackMsg(pMsg, Pack, 0))
-			return -1;
-
-		Packet.m_ClientID = ClientID;
-		Packet.m_pData = Pack.Data();
-		Packet.m_DataSize = Pack.Size();
-
-		// write message to demo recorders
-		if (!(Flags & MSGFLAG_NORECORD))
+		else
 		{
-			m_DemoRecorder.RecordMessage(Pack.Data(), Pack.Size());
+			CPacker Pack;
+			if (RepackMsg(pMsg, Pack, false))
+				return -1;
+
+			Packet.m_ClientID = ClientID;
+			Packet.m_pData = Pack.Data();
+			Packet.m_DataSize = Pack.Size();
+
+			if (!(Flags & MSGFLAG_NOSEND))
+				m_NetServer.Send(&Packet);
 		}
-
-		if (!(Flags & MSGFLAG_NOSEND))
-			m_NetServer.Send(&Packet);
 	}
-
 	return 0;
 }
 
-void CServer::DoSnapshot()
+void CServer::DoSnapshot(int WorldID)
 {
-	GameServer()->OnPreSnap();
-
-	// create snapshot for demo recording
-	if (m_DemoRecorder.IsRecording())
-	{
-		char aData[CSnapshot::MAX_SIZE];
-		int SnapshotSize;
-
-		// build snap and possibly add some messages
-		m_SnapshotBuilder.Init();
-		GameServer()->OnSnap(-1);
-		SnapshotSize = m_SnapshotBuilder.Finish(aData);
-
-		// write snapshot
-		m_DemoRecorder.RecordSnapshot(Tick(), aData, SnapshotSize);
-	}
-
-	// create snapshots for all clients
-	for (int i = 0; i < MAX_CLIENTS; i++)
+	GameServer(WorldID)->OnPreSnap();
+	for (int i = 0; i < MAX_PLAYERS; i++)
 	{
 		// client must be ingame to recive snapshots
-		if (m_aClients[i].m_State != CClient::STATE_INGAME)
-			continue;
-
-		// client must be human to receive snapshots
-		if (m_aClients[i].m_IsBot)
+		if (m_aClients[i].m_WorldID != WorldID || m_aClients[i].m_State != CClient::STATE_INGAME)
 			continue;
 
 		// this client is trying to recover, don't spam snapshots
@@ -674,38 +716,32 @@ void CServer::DoSnapshot()
 			continue;
 
 		{
-			char aData[CSnapshot::MAX_SIZE];
-			CSnapshot *pData = (CSnapshot *)aData; // Fix compiler warning for strict-aliasing
-			char aDeltaData[CSnapshot::MAX_SIZE];
-			char aCompData[CSnapshot::MAX_SIZE];
-			int SnapshotSize;
-			int Crc;
-			static CSnapshot EmptySnap;
-			CSnapshot *pDeltashot = &EmptySnap;
-			int DeltashotSize;
-			int DeltaTick = -1;
-			int DeltaSize;
-
 			m_SnapshotBuilder.Init();
 
-			GameServer()->OnSnap(i);
+			GameServer(WorldID)->OnSnap(i);
 
 			// finish snapshot
-			SnapshotSize = m_SnapshotBuilder.Finish(pData);
-			Crc = pData->Crc();
+			char aData[CSnapshot::MAX_SIZE];
+			CSnapshot *pData = (CSnapshot *)aData; // Fix compiler warning for strict-aliasing
+			int SnapshotSize = m_SnapshotBuilder.Finish(pData);
 
-			// remove old snapshos
+			int Crc = pData->Crc();
+
+			// remove old snapshots
 			// keep 3 seconds worth of snapshots
 			m_aClients[i].m_Snapshots.PurgeUntil(m_CurrentGameTick - SERVER_TICK_SPEED * 3);
 
-			// save it the snapshot
+			// save the snapshot
 			m_aClients[i].m_Snapshots.Add(m_CurrentGameTick, time_get(), SnapshotSize, pData, 0, nullptr);
 
-			// find snapshot that we can preform delta against
-			EmptySnap.Clear();
+			// find snapshot that we can perform delta against
+			static CSnapshot s_EmptySnap;
+			s_EmptySnap.Clear();
 
+			int DeltaTick = -1;
+			CSnapshot *pDeltashot = &s_EmptySnap;
 			{
-				DeltashotSize = m_aClients[i].m_Snapshots.Get(m_aClients[i].m_LastAckedSnapshot, 0, &pDeltashot, 0);
+				int DeltashotSize = m_aClients[i].m_Snapshots.Get(m_aClients[i].m_LastAckedSnapshot, 0, &pDeltashot, 0);
 				if (DeltashotSize >= 0)
 					DeltaTick = m_aClients[i].m_LastAckedSnapshot;
 				else
@@ -717,19 +753,17 @@ void CServer::DoSnapshot()
 			}
 
 			// create delta
-			DeltaSize = m_SnapshotDelta.CreateDelta(pDeltashot, pData, aDeltaData);
-
-			if (DeltaSize)
+			char aDeltaData[CSnapshot::MAX_SIZE];
+			if (int DeltaSize = m_SnapshotDelta.CreateDelta(pDeltashot, pData, aDeltaData))
 			{
 				// compress it
-				int SnapshotSize;
 				const int MaxSize = MAX_SNAPSHOT_PACKSIZE;
-				int NumPackets;
 
+				char aCompData[CSnapshot::MAX_SIZE];
 				SnapshotSize = CVariableInt::Compress(aDeltaData, DeltaSize, aCompData, sizeof(aCompData));
-				NumPackets = (SnapshotSize + MaxSize - 1) / MaxSize;
+				int NumPackets = (SnapshotSize + MaxSize - 1) / MaxSize;
 
-				for (int n = 0, Left = SnapshotSize; Left; n++)
+				for (int n = 0, Left = SnapshotSize; Left > 0; n++)
 				{
 					int Chunk = Left < MaxSize ? Left : MaxSize;
 					Left -= Chunk;
@@ -742,7 +776,7 @@ void CServer::DoSnapshot()
 						Msg.AddInt(Crc);
 						Msg.AddInt(Chunk);
 						Msg.AddRaw(&aCompData[n * MaxSize], Chunk);
-						SendMsg(&Msg, MSGFLAG_FLUSH, i);
+						SendMsg(&Msg, MSGFLAG_FLUSH, i, -1, WorldID);
 					}
 					else
 					{
@@ -754,7 +788,7 @@ void CServer::DoSnapshot()
 						Msg.AddInt(Crc);
 						Msg.AddInt(Chunk);
 						Msg.AddRaw(&aCompData[n * MaxSize], Chunk);
-						SendMsg(&Msg, MSGFLAG_FLUSH, i);
+						SendMsg(&Msg, MSGFLAG_FLUSH, i, -1, WorldID);
 					}
 				}
 			}
@@ -763,12 +797,11 @@ void CServer::DoSnapshot()
 				CMsgPacker Msg(NETMSG_SNAPEMPTY, true);
 				Msg.AddInt(m_CurrentGameTick);
 				Msg.AddInt(m_CurrentGameTick - DeltaTick);
-				SendMsg(&Msg, MSGFLAG_FLUSH, i);
+				SendMsg(&Msg, MSGFLAG_FLUSH, i, -1, WorldID);
 			}
 		}
 	}
-
-	GameServer()->OnPostSnap();
+	GameServer(WorldID)->OnPostSnap();
 }
 
 int CServer::ClientRejoinCallback(int ClientID, void *pUser)
@@ -777,6 +810,9 @@ int CServer::ClientRejoinCallback(int ClientID, void *pUser)
 
 	pThis->m_aClients[ClientID].m_Authed = AUTHED_NO;
 	pThis->m_aClients[ClientID].m_pRconCmdToSend = 0;
+	pThis->m_aClients[ClientID].m_DDNetVersion = VERSION_NONE;
+	pThis->m_aClients[ClientID].m_GotDDNetVersionPacket = false;
+	pThis->m_aClients[ClientID].m_DDNetVersionSettled = false;
 
 	pThis->m_aClients[ClientID].Reset();
 
@@ -795,6 +831,8 @@ int CServer::NewClientNoAuthCallback(int ClientID, void *pUser)
 	pThis->m_aClients[ClientID].m_Authed = AUTHED_NO;
 	pThis->m_aClients[ClientID].m_AuthTries = 0;
 	pThis->m_aClients[ClientID].m_pRconCmdToSend = 0;
+	pThis->m_aClients[ClientID].m_OldWorldID = MAIN_WORLD_ID;
+	pThis->m_aClients[ClientID].m_WorldID = MAIN_WORLD_ID;
 	pThis->m_aClients[ClientID].m_CustClt = 0;
 	pThis->m_aClients[ClientID].Reset();
 
@@ -819,10 +857,28 @@ int CServer::NewClientCallback(int ClientID, void *pUser, bool Sixup)
 	pThis->m_aClients[ClientID].m_Authed = AUTHED_NO;
 	pThis->m_aClients[ClientID].m_AuthTries = 0;
 	pThis->m_aClients[ClientID].m_pRconCmdToSend = 0;
+	pThis->m_aClients[ClientID].m_OldWorldID = MAIN_WORLD_ID;
+	pThis->m_aClients[ClientID].m_WorldID = MAIN_WORLD_ID;
+	pThis->m_aClients[ClientID].m_IsChangesWorld = false;
 	pThis->m_aClients[ClientID].m_IsBot = false;
 	memset(&pThis->m_aClients[ClientID].m_Addr, 0, sizeof(NETADDR));
 	pThis->m_aClients[ClientID].Reset();
 	return 0;
+}
+
+bool CServer::IsClientChangesWorld(int ClientID)
+{
+	if (ClientID < 0 || ClientID >= MAX_CLIENTS)
+		return false;
+
+	return m_aClients[ClientID].m_IsChangesWorld && m_aClients[ClientID].m_State >= CClient::STATE_CONNECTING && m_aClients[ClientID].m_State < CClient::STATE_INGAME;
+}
+
+const char *CServer::GetWorldName(int WorldID)
+{
+	if (!MultiWorlds()->IsValid(WorldID))
+		return "invalid";
+	return MultiWorlds()->GetWorld(WorldID)->m_aName;
 }
 
 int CServer::DelClientCallback(int ClientID, const char *pReason, void *pUser)
@@ -836,13 +892,18 @@ int CServer::DelClientCallback(int ClientID, const char *pReason, void *pUser)
 	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
 
 	// notify the mod about the drop
-	if (pThis->m_aClients[ClientID].m_State >= CClient::STATE_READY)
+	if (pThis->m_aClients[ClientID].m_State >= CClient::STATE_READY || pThis->IsClientChangesWorld(ClientID))
 	{
-		pThis->m_aClients[ClientID].m_State = CClient::STATE_EMPTY;
-		if (!pThis->GameServer()->ReplacePlayerByBot(ClientID))
-			pThis->GameServer()->OnClientDrop(ClientID, pReason);
-		else
-			return 0;
+		pThis->m_aClients[ClientID].m_Quitting = true;
+
+		for (int i = 0; i < pThis->MultiWorlds()->GetSizeInitilized(); i++)
+		{
+			IGameServer *pGameServer = pThis->MultiWorlds()->GetWorld(i)->m_pGameServer;
+			pGameServer->OnClientDrop(ClientID, pReason);
+		}
+
+		pThis->GameServer(MAIN_WORLD_ID)->ClearClientData(ClientID);
+		pThis->ExpireServerInfo();
 	}
 
 	pThis->m_aClients[ClientID].m_State = CClient::STATE_EMPTY;
@@ -853,10 +914,51 @@ int CServer::DelClientCallback(int ClientID, const char *pReason, void *pUser)
 	pThis->m_aClients[ClientID].m_AuthTries = 0;
 	pThis->m_aClients[ClientID].m_pRconCmdToSend = 0;
 	pThis->m_aClients[ClientID].m_IsBot = false;
+	pThis->m_aClients[ClientID].m_OldWorldID = MAIN_WORLD_ID;
+	pThis->m_aClients[ClientID].m_WorldID = MAIN_WORLD_ID;
+	pThis->m_aClients[ClientID].m_IsChangesWorld = false;
+	pThis->m_aClients[ClientID].m_Quitting = false;
 	pThis->m_aClients[ClientID].m_Snapshots.PurgeAll();
 
 	pThis->ExpireServerInfo();
 	return 0;
+}
+
+void CServer::SendMapData(int ClientID, int Chunk)
+{
+	const int WorldID = m_aClients[ClientID].m_WorldID;
+	unsigned int CurrentMapSize = MultiWorlds()->GetWorld(WorldID)->m_pLoadedMap->GetCurrentMapSize();
+	unsigned char *pCurrentMapData = MultiWorlds()->GetWorld(WorldID)->m_pLoadedMap->GetCurrentMapData();
+	const unsigned Crc = MultiWorlds()->GetWorld(WorldID)->m_pLoadedMap->Crc();
+
+	unsigned int ChunkSize = 1024 - 128;
+	const unsigned int Offset = Chunk * ChunkSize;
+	int Last = 0;
+
+	// drop faulty map data requests
+	if (Chunk < 0 || Offset > CurrentMapSize)
+		return;
+
+	if ((Offset + ChunkSize) >= CurrentMapSize)
+	{
+		ChunkSize = CurrentMapSize - Offset;
+		Last = 1;
+	}
+
+	CMsgPacker Msg(NETMSG_MAP_DATA, true);
+	Msg.AddInt(Last);
+	Msg.AddInt(Crc);
+	Msg.AddInt(Chunk);
+	Msg.AddInt(ChunkSize);
+	Msg.AddRaw(&pCurrentMapData[Offset], ChunkSize);
+	SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientID);
+
+	if (g_Config.m_Debug)
+	{
+		char aBuf[256];
+		str_format(aBuf, sizeof(aBuf), "sending chunk %d with size %d", Chunk, ChunkSize);
+		Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "server", aBuf);
+	}
 }
 
 void CServer::SendRconType(int ClientID, bool UsernameReq)
@@ -869,29 +971,42 @@ void CServer::SendRconType(int ClientID, bool UsernameReq)
 void CServer::SendCapabilities(int ClientID)
 {
 	CMsgPacker Msg(NETMSG_CAPABILITIES, true);
-	Msg.AddInt(SERVERCAP_CURVERSION);																													  // version
-	Msg.AddInt(SERVERCAPFLAG_DDNET | SERVERCAPFLAG_CHATTIMEOUTCODE | SERVERCAPFLAG_ANYPLAYERFLAG | SERVERCAPFLAG_PINGEX | SERVERCAPFLAG_SYNCWEAPONINPUT); // flags
+	Msg.AddInt(SERVERCAP_CURVERSION); // version
+	Msg.AddInt(SERVERCAPFLAG_DDNET |
+			   SERVERCAPFLAG_ANYPLAYERFLAG |
+			   SERVERCAPFLAG_PINGEX |
+			   SERVERCAPFLAG_SYNCWEAPONINPUT); // flags
 	SendMsg(&Msg, MSGFLAG_VITAL, ClientID);
 }
 
 void CServer::SendMap(int ClientID)
 {
+	const int WorldID = m_aClients[ClientID].m_WorldID;
+	const char *pWorldName = MultiWorlds()->GetWorld(WorldID)->m_aName;
+	IEngineMap *pMap = MultiWorlds()->GetWorld(WorldID)->m_pLoadedMap;
+	const unsigned Crc = pMap->Crc();
+
 	{
+		SHA256_DIGEST Sha256 = pMap->Sha256();
 		CMsgPacker Msg(NETMSG_MAP_DETAILS, true);
-		Msg.AddString(GetMapName(), 0);
-		Msg.AddRaw(&m_CurrentMapSha256.data, sizeof(m_CurrentMapSha256.data));
-		Msg.AddInt(m_CurrentMapCrc);
-		Msg.AddInt(m_CurrentMapSize);
+		Msg.AddString("SOSOSO", 0);
+		Msg.AddRaw(&Sha256.data, sizeof(Sha256.data));
+		Msg.AddInt(Crc);
+		Msg.AddInt(pMap->GetCurrentMapSize());
 		Msg.AddString("", 0); // HTTPS map download URL
 		SendMsg(&Msg, MSGFLAG_VITAL, ClientID);
 	}
+
 	{
+
 		CMsgPacker Msg(NETMSG_MAP_CHANGE, true);
-		Msg.AddString(GetMapName(), 0);
-		Msg.AddInt(m_CurrentMapCrc);
-		Msg.AddInt(m_CurrentMapSize);
+		Msg.AddString(pWorldName, 0);
+		Msg.AddInt(Crc);
+		Msg.AddInt(pMap->GetCurrentMapSize());
 		SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientID);
 	}
+
+	m_aClients[ClientID].m_NextMapChunk = 0;
 }
 
 void CServer::SendConnectionReady(int ClientID)
@@ -962,32 +1077,50 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 	int ClientID = pPacket->m_ClientID;
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
+	CMsgPacker Packer(NETMSG_EX, true);
 
 	// unpack msgid and system flag
-	int Msg = Unpacker.GetInt();
-	int Sys = Msg & 1;
-	Msg >>= 1;
+	int MsgID;
+	bool Sys;
+	CUuid Uuid;
 
-	if (Unpacker.Error())
+	int Result = UnpackMessageID(&MsgID, &Sys, &Uuid, &Unpacker, &Packer);
+	if (Result == UNPACKMESSAGE_ERROR)
+	{
 		return;
+	}
+
+	if (Result == UNPACKMESSAGE_ANSWER)
+	{
+		SendMsg(&Packer, MSGFLAG_VITAL, ClientID);
+	}
 
 	if (Sys)
 	{
 		// system message
-		if (Msg == NETMSG_INFO)
+		if (MsgID == NETMSG_CLIENTVER)
 		{
 			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State == CClient::STATE_AUTH)
 			{
-				const char *pVersion = Unpacker.GetString(CUnpacker::SANITIZE_CC);
-				if ((str_comp(pVersion, GameServer()->NetVersion()) != 0) && (str_comp(pVersion, "0.6 626fce9a778df4d4") != 0))
+				CUuid *pConnectionID = (CUuid *)Unpacker.GetRaw(sizeof(*pConnectionID));
+				int DDNetVersion = Unpacker.GetInt();
+				const char *pDDNetVersionStr = Unpacker.GetString(CUnpacker::SANITIZE_CC);
+				if (Unpacker.Error() || !str_utf8_check(pDDNetVersionStr) || DDNetVersion < 0)
 				{
-					// wrong version
-					char aReason[256];
-					str_format(aReason, sizeof(aReason), "Wrong version. Server is running '%s' and client '%s'", GameServer()->NetVersion(), pVersion);
-					m_NetServer.Drop(ClientID, aReason);
 					return;
 				}
-
+				m_aClients[ClientID].m_ConnectionID = *pConnectionID;
+				m_aClients[ClientID].m_DDNetVersion = DDNetVersion;
+				str_copy(m_aClients[ClientID].m_aDDNetVersionStr, pDDNetVersionStr, sizeof(m_aClients[ClientID].m_aDDNetVersionStr));
+				m_aClients[ClientID].m_DDNetVersionSettled = true;
+				m_aClients[ClientID].m_GotDDNetVersionPacket = true;
+				m_aClients[ClientID].m_State = CClient::STATE_AUTH;
+			}
+		}
+		else if (MsgID == NETMSG_INFO)
+		{
+			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State == CClient::STATE_AUTH)
+			{
 				const char *pPassword = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 				if (g_Config.m_Password[0] != 0 && str_comp(g_Config.m_Password, pPassword) != 0)
 				{
@@ -996,81 +1129,86 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 					return;
 				}
 
+				m_aClients[ClientID].m_Version = Unpacker.GetInt();
 				m_aClients[ClientID].m_State = CClient::STATE_CONNECTING;
+				GameServer(MAIN_WORLD_ID)->ClearClientData(ClientID);
 				SendCapabilities(ClientID);
 				SendMap(ClientID);
 			}
 		}
-		else if (Msg == NETMSG_REQUEST_MAP_DATA)
+		else if (MsgID == NETMSG_REQUEST_MAP_DATA)
 		{
 			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) == 0 || m_aClients[ClientID].m_State < CClient::STATE_CONNECTING)
 				return;
 
-			int Chunk = Unpacker.GetInt();
-			unsigned int ChunkSize = 1024 - 128;
-			unsigned int Offset = Chunk * ChunkSize;
-			int Last = 0;
-
-			// drop faulty map data requests
-			if (Chunk < 0 || Offset > (unsigned int)m_CurrentMapSize)
+			const int Chunk = Unpacker.GetInt();
+			if (Chunk != m_aClients[ClientID].m_NextMapChunk || !g_Config.m_SvFastDownload)
+			{
+				SendMapData(ClientID, Chunk);
 				return;
-
-			if (Offset + ChunkSize >= (unsigned int)m_CurrentMapSize)
-			{
-				ChunkSize = m_CurrentMapSize - Offset;
-				if (ChunkSize < 0)
-					ChunkSize = 0;
-				Last = 1;
 			}
 
-			CMsgPacker Msg(NETMSG_MAP_DATA, true);
-			Msg.AddInt(Last);
-			Msg.AddInt(m_CurrentMapCrc);
-			Msg.AddInt(Chunk);
-			Msg.AddInt(ChunkSize);
-			Msg.AddRaw(&m_pCurrentMapData[Offset], ChunkSize);
-			SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientID);
-
-			if (g_Config.m_Debug)
+			if (Chunk == 0)
 			{
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "sending chunk %d with size %d", Chunk, ChunkSize);
-				Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "server", aBuf);
+				for (int i = 0; i < g_Config.m_SvMapWindow; i++)
+				{
+					SendMapData(ClientID, i);
+				}
 			}
+
+			SendMapData(ClientID, g_Config.m_SvMapWindow + m_aClients[ClientID].m_NextMapChunk);
+			m_aClients[ClientID].m_NextMapChunk++;
 		}
-		else if (Msg == NETMSG_READY)
+		else if (MsgID == NETMSG_READY)
 		{
 			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State == CClient::STATE_CONNECTING)
 			{
-				char aAddrStr[NETADDR_MAXSTRSIZE];
-				net_addr_str(m_NetServer.ClientAddr(ClientID), aAddrStr, sizeof(aAddrStr), true);
+				if (!m_aClients[ClientID].m_IsChangesWorld)
+				{
+					char aAddrStr[NETADDR_MAXSTRSIZE];
+					net_addr_str(m_NetServer.ClientAddr(ClientID), aAddrStr, sizeof(aAddrStr), true);
 
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "player is ready. ClientID=%x addr=%s secure=%s", ClientID, aAddrStr, m_NetServer.HasSecurityToken(ClientID) ? "yes" : "no");
-				Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
+					char aBuf[256];
+					str_format(aBuf, sizeof(aBuf), "player is ready. ClientID=%d addr=%s", ClientID, aAddrStr);
+					Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
+
+					const int WorldID = m_aClients[ClientID].m_WorldID;
+					for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+					{
+						IGameServer *pGameServer = MultiWorlds()->GetWorld(i)->m_pGameServer;
+						pGameServer->PrepareClientChangeWorld(ClientID);
+					}
+					GameServer(WorldID)->OnClientConnected(ClientID);
+				}
+
 				m_aClients[ClientID].m_State = CClient::STATE_READY;
-				GameServer()->OnClientConnected(ClientID);
 				SendConnectionReady(ClientID);
+				SendCapabilities(ClientID);
 				ExpireServerInfo();
 			}
 		}
-		else if (Msg == NETMSG_ENTERGAME)
+		else if (MsgID == NETMSG_ENTERGAME)
 		{
-			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State == CClient::STATE_READY && GameServer()->IsClientReady(ClientID))
-			{
-				char aAddrStr[NETADDR_MAXSTRSIZE];
-				net_addr_str(m_NetServer.ClientAddr(ClientID), aAddrStr, sizeof(aAddrStr), true);
+			const int WorldID = m_aClients[ClientID].m_WorldID;
 
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "player has entered the game. ClientID=%x addr=%s", ClientID, aAddrStr);
-				Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State == CClient::STATE_READY && GameServer(WorldID)->IsClientReady(ClientID))
+			{
+				if (!m_aClients[ClientID].m_IsChangesWorld)
+				{
+					char aAddrStr[NETADDR_MAXSTRSIZE];
+					net_addr_str(m_NetServer.ClientAddr(ClientID), aAddrStr, sizeof(aAddrStr), true);
+
+					char aBuf[256];
+					str_format(aBuf, sizeof(aBuf), "player has entered the game. ClientID=%d addr=%s", ClientID, aAddrStr);
+					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+				}
+
 				m_aClients[ClientID].m_State = CClient::STATE_INGAME;
-				SendServerInfo(m_NetServer.ClientAddr(ClientID), -1, SERVERINFO_EXTENDED, false);
-				GameServer()->OnClientEnter(ClientID);
+				GameServer(WorldID)->OnClientEnter(ClientID);
 				ExpireServerInfo();
 			}
 		}
-		else if (Msg == NETMSG_INPUT)
+		else if (MsgID == NETMSG_INPUT)
 		{
 			CClient::CInput *pInput;
 			int64 TagTime;
@@ -1095,10 +1233,10 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 			{
 				int TimeLeft = ((TickStartTime(IntendedTick) - time_get()) * 1000) / time_freq();
 
-				CMsgPacker Msg(NETMSG_INPUTTIMING, true);
-				Msg.AddInt(IntendedTick);
-				Msg.AddInt(TimeLeft);
-				SendMsg(&Msg, 0, ClientID);
+				CMsgPacker Msgp(NETMSG_INPUTTIMING, true);
+				Msgp.AddInt(IntendedTick);
+				Msgp.AddInt(TimeLeft);
+				SendMsg(&Msgp, 0, ClientID, -1, m_aClients[ClientID].m_WorldID);
 			}
 
 			m_aClients[ClientID].m_LastInputTick = IntendedTick;
@@ -1120,87 +1258,55 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 
 			// call the mod with the fresh input data
 			if (m_aClients[ClientID].m_State == CClient::STATE_INGAME)
-				GameServer()->OnClientDirectInput(ClientID, m_aClients[ClientID].m_LatestInput.m_aData);
+			{
+				const int WorldID = m_aClients[ClientID].m_WorldID;
+				GameServer(WorldID)->OnClientDirectInput(ClientID, m_aClients[ClientID].m_LatestInput.m_aData);
+			}
 		}
-		else if (Msg == NETMSG_RCON_CMD)
+		else if (MsgID == NETMSG_RCON_CMD)
 		{
 			const char *pCmd = Unpacker.GetString();
+			if (!str_utf8_check(pCmd))
+			{
+				return;
+			}
 
 			if (Unpacker.Error() == 0 && !str_comp(pCmd, "crashmeplx"))
 			{
-				SetCustClt(ClientID);
+				int Version = m_aClients[ClientID].m_DDNetVersion;
+				if (GameServer()->PlayerExists(ClientID) && Version < VERSION_DDNET_OLD)
+				{
+					m_aClients[ClientID].m_DDNetVersion = VERSION_DDNET_OLD;
+				}
 			}
 			else if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Unpacker.Error() == 0 && m_aClients[ClientID].m_Authed)
+			{
+				m_RconClientID = ClientID;
+				m_RconAuthLevel = m_aClients[ClientID].m_Authed;
+				Console()->SetAccessLevel(m_aClients[ClientID].m_Authed == AUTHED_ADMIN ? IConsole::ACCESS_LEVEL_ADMIN : IConsole::ACCESS_LEVEL_MOD);
+				Console()->ExecuteLineFlag(pCmd, -1, CFGFLAG_SERVER);
+				Console()->SetAccessLevel(IConsole::ACCESS_LEVEL_ADMIN);
+				m_RconClientID = RCON_CID_SERV;
+				m_RconAuthLevel = AUTHED_ADMIN;
 
-				if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Unpacker.Error() == 0 && m_aClients[ClientID].m_Authed)
-				{
-					char aBuf[256];
-					str_format(aBuf, sizeof(aBuf), "ClientID=%d rcon='%s'", ClientID, pCmd);
-					Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
-					m_RconClientID = ClientID;
-					m_RconAuthLevel = m_aClients[ClientID].m_Authed;
-					switch (m_aClients[ClientID].m_Authed)
-					{
-					case AUTHED_ADMIN:
-						Console()->SetAccessLevel(IConsole::ACCESS_LEVEL_ADMIN);
-						break;
-					case AUTHED_MOD:
-						Console()->SetAccessLevel(IConsole::ACCESS_LEVEL_MOD);
-						break;
-					default:
-						Console()->SetAccessLevel(IConsole::ACCESS_LEVEL_USER);
-					}
-					Console()->ExecuteLineFlag(pCmd, ClientID, CFGFLAG_SERVER);
-					Console()->SetAccessLevel(IConsole::ACCESS_LEVEL_ADMIN);
-					m_RconClientID = IServer::RCON_CID_SERV;
-					m_RconAuthLevel = AUTHED_ADMIN;
-				}
+				char aBuf[256];
+				str_format(aBuf, sizeof(aBuf), "ClientID=%d rcon='%s'", ClientID, pCmd);
+				Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
+			}
 		}
-		else if (Msg == NETMSG_RCON_AUTH)
+		else if (MsgID == NETMSG_RCON_AUTH)
 		{
-			const char *pPw;
-			Unpacker.GetString(); // login name, not used
-			pPw = Unpacker.GetString(CUnpacker::SANITIZE_CC);
+			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC); // login name, now used
+			const char *pPw = Unpacker.GetString(CUnpacker::SANITIZE_CC);
+			if (!str_utf8_check(pPw) || !str_utf8_check(pName))
+				return;
 
 			if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Unpacker.Error() == 0)
 			{
-				if (g_Config.m_SvRconPassword[0] == 0 && g_Config.m_SvRconModPassword[0] == 0)
-				{
-					SendRconLine(ClientID, "No rcon password set on server. Set sv_rcon_password and/or sv_rcon_mod_password to enable the remote console.");
-				}
-				else if (g_Config.m_SvRconPassword[0] && str_comp(pPw, g_Config.m_SvRconPassword) == 0)
-				{
-					CMsgPacker Msg(NETMSG_RCON_AUTH_STATUS, true);
-					Msg.AddInt(1); // authed
-					Msg.AddInt(1); // cmdlist
-					SendMsg(&Msg, MSGFLAG_VITAL, ClientID);
-
-					m_aClients[ClientID].m_Authed = AUTHED_ADMIN;
-					GameServer()->OnSetAuthed(ClientID, m_aClients[ClientID].m_Authed);
-					int SendRconCmds = Unpacker.GetInt();
-					if (Unpacker.Error() == 0 && SendRconCmds)
-						m_aClients[ClientID].m_pRconCmdToSend = Console()->FirstCommandInfo(IConsole::ACCESS_LEVEL_ADMIN, CFGFLAG_SERVER);
-					SendRconLine(ClientID, "Admin authentication successful. Full remote console access granted.");
-					char aBuf[256];
-					str_format(aBuf, sizeof(aBuf), "ClientID=%d authed (admin)", ClientID);
-					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
-				}
-				else if (g_Config.m_SvRconModPassword[0] && str_comp(pPw, g_Config.m_SvRconModPassword) == 0)
-				{
-					CMsgPacker Msg(NETMSG_RCON_AUTH_STATUS, true);
-					Msg.AddInt(1); // authed
-					Msg.AddInt(1); // cmdlist
-					SendMsg(&Msg, MSGFLAG_VITAL, ClientID);
-
+				if (g_Config.m_SvRconModPassword[0] && str_comp(pPw, g_Config.m_SvRconModPassword) == 0)
 					m_aClients[ClientID].m_Authed = AUTHED_MOD;
-					int SendRconCmds = Unpacker.GetInt();
-					if (Unpacker.Error() == 0 && SendRconCmds)
-						m_aClients[ClientID].m_pRconCmdToSend = Console()->FirstCommandInfo(IConsole::ACCESS_LEVEL_MOD, CFGFLAG_SERVER);
-					SendRconLine(ClientID, "Moderator authentication successful. Limited remote console access granted.");
-					char aBuf[256];
-					str_format(aBuf, sizeof(aBuf), "ClientID=%d authed (moderator)", ClientID);
-					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
-				}
+				else if (g_Config.m_SvRconPassword[0] && str_comp(pPw, g_Config.m_SvRconPassword) == 0)
+					m_aClients[ClientID].m_Authed = AUTHED_ADMIN;
 				else if (g_Config.m_SvRconMaxTries)
 				{
 					m_aClients[ClientID].m_AuthTries++;
@@ -1211,20 +1317,56 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 					{
 						if (!g_Config.m_SvRconBantime)
 							m_NetServer.Drop(ClientID, "Too many remote console authentication tries");
-						else
-							m_ServerBan.BanAddr(m_NetServer.ClientAddr(ClientID), g_Config.m_SvRconBantime * 60, "Too many remote console authentication tries");
 					}
 				}
 				else
 				{
 					SendRconLine(ClientID, "Wrong password.");
 				}
+
+				// authed
+				if (m_aClients[ClientID].m_Authed != AUTHED_NO)
+				{
+					CMsgPacker Msgp(NETMSG_RCON_AUTH_STATUS, true);
+					Msgp.AddInt(1); // authed
+					Msgp.AddInt(1); // cmdlist
+					SendMsg(&Msgp, MSGFLAG_VITAL, ClientID);
+
+					char aBuf[256];
+					char aAddrStr[NETADDR_MAXSTRSIZE];
+					net_addr_str(m_NetServer.ClientAddr(ClientID), aAddrStr, sizeof(aAddrStr), true);
+					if (m_aClients[ClientID].m_Authed == AUTHED_MOD)
+					{
+						m_aClients[ClientID].m_pRconCmdToSend = Console()->FirstCommandInfo(IConsole::ACCESS_LEVEL_MOD, CFGFLAG_SERVER);
+						SendRconLine(ClientID, "Moderator authentication successful. Limited remote console access granted.");
+						str_format(aBuf, sizeof(aBuf), "ClientID=%d addr=%s authed (moderator)", ClientID, aAddrStr);
+						Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+					}
+					else if (m_aClients[ClientID].m_Authed == AUTHED_ADMIN)
+					{
+						m_aClients[ClientID].m_pRconCmdToSend = Console()->FirstCommandInfo(IConsole::ACCESS_LEVEL_ADMIN, CFGFLAG_SERVER);
+						SendRconLine(ClientID, "Admin authentication successful. Full remote console access granted.");
+						str_format(aBuf, sizeof(aBuf), "ClientID=%d addr=%s authed (admin)", ClientID, aAddrStr);
+						Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+					}
+				}
 			}
 		}
-		else if (Msg == NETMSG_PING)
+		else if (MsgID == NETMSG_PING)
 		{
 			CMsgPacker Msg(NETMSG_PING_REPLY, true);
-			SendMsg(&Msg, 0, ClientID);
+			SendMsg(&Msg, 0, ClientID, -1, m_aClients[ClientID].m_WorldID);
+		}
+		else if (MsgID == NETMSG_PINGEX)
+		{
+			CUuid *pID = (CUuid *)Unpacker.GetRaw(sizeof(*pID));
+			if (Unpacker.Error())
+			{
+				return;
+			}
+			CMsgPacker Msgp(NETMSG_PONGEX, true);
+			Msgp.AddRaw(pID, sizeof(*pID));
+			SendMsg(&Msgp, MSGFLAG_FLUSH, ClientID, m_aClients[ClientID].m_WorldID);
 		}
 		else
 		{
@@ -1242,7 +1384,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 				}
 
 				char aBufMsg[256];
-				str_format(aBufMsg, sizeof(aBufMsg), "strange message ClientID=%d msg=%d data_size=%d", ClientID, Msg, pPacket->m_DataSize);
+				str_format(aBufMsg, sizeof(aBufMsg), "strange message ClientID=%d msg=%d data_size=%d", ClientID, MsgID, pPacket->m_DataSize);
 				Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "server", aBufMsg);
 				Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "server", aBuf);
 			}
@@ -1252,7 +1394,10 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 	{
 		// game message
 		if ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && m_aClients[ClientID].m_State >= CClient::STATE_READY)
-			GameServer()->OnMessage(Msg, &Unpacker, ClientID);
+		{
+			const int WorldID = m_aClients[ClientID].m_WorldID;
+			GameServer(WorldID)->OnMessage(MsgID, &Unpacker, ClientID);
+		}
 	}
 }
 
@@ -1328,9 +1473,9 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 
 	// count the players
 	int PlayerCount = 0, ClientCount = 0;
-	for (int i = 0; i < MAX_CLIENTS; i++)
+	for (int i = 0; i < MAX_PLAYERS; i++)
 	{
-		if (m_aClients[i].m_State != CClient::STATE_EMPTY && !m_aClients[i].m_IsBot)
+		if (m_aClients[i].m_State != CClient::STATE_EMPTY)
 		{
 			if (GameServer()->IsClientPlayer(i))
 				PlayerCount++;
@@ -1356,27 +1501,26 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	}
 	else
 	{
-		if (m_NetServer.MaxClients() <= MAX_CLIENTS)
+		if (m_NetServer.MaxClients() <= VANILLA_MAX_CLIENTS)
 		{
 			p.AddString(g_Config.m_SvName, 64);
 		}
 		else
 		{
-			const int MaxClients = max(ClientCount, m_NetServer.MaxClients());
-			str_format(aBuf, sizeof(aBuf), "%s [%d/%d]", g_Config.m_SvName, ClientCount, MaxClients);
+			str_format(aBuf, sizeof(aBuf), "%s [%d/%d]", g_Config.m_SvName, ClientCount, m_NetServer.MaxClients());
 			p.AddString(aBuf, 64);
 		}
 	}
-	p.AddString(GetMapName(), 32);
+	p.AddString(g_Config.m_SvMap, 32);
 
 	if (Type == SERVERINFO_EXTENDED)
 	{
-		ADD_INT(p, m_CurrentMapCrc);
-		ADD_INT(p, m_CurrentMapSize);
+		ADD_INT(p, MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_pLoadedMap->Crc());
+		ADD_INT(p, MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_pLoadedMap->GetCurrentMapSize());
 	}
 
 	// gametype
-	p.AddString(GameServer()->GameType(), 16);
+	p.AddString("MRPG", 16);
 
 	// flags
 	ADD_INT(p, g_Config.m_Password[0] ? SERVER_FLAG_PASSWORD : 0);
@@ -1384,25 +1528,25 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	int MaxClients = m_NetServer.MaxClients();
 	// How many clients the used serverinfo protocol supports, has to be tracked
 	// separately to make sure we don't subtract the reserved slots from it
-	int MaxClientsProtocol = MAX_CLIENTS;
+	int MaxClientsProtocol = MAX_PLAYERS;
 	if (Type == SERVERINFO_VANILLA || Type == SERVERINFO_INGAME)
 	{
-		if (ClientCount >= MAX_CLIENTS)
+		if (ClientCount >= VANILLA_MAX_CLIENTS)
 		{
 			if (ClientCount < MaxClients)
-				ClientCount = MAX_CLIENTS - 1;
+				ClientCount = VANILLA_MAX_CLIENTS - 1;
 			else
-				ClientCount = MAX_CLIENTS;
+				ClientCount = VANILLA_MAX_CLIENTS;
 		}
-		MaxClientsProtocol = MAX_CLIENTS;
+		MaxClientsProtocol = VANILLA_MAX_CLIENTS;
 		if (PlayerCount > ClientCount)
 			PlayerCount = ClientCount;
 	}
 
-	ADD_INT(p, PlayerCount);																			 // num players
-	ADD_INT(p, minimum(MaxClientsProtocol, max(MaxClients - g_Config.m_SvSpectatorSlots, PlayerCount))); // max players
-	ADD_INT(p, ClientCount);																			 // num clients
-	ADD_INT(p, minimum(MaxClientsProtocol, max(MaxClients, ClientCount)));								 // max clients
+	ADD_INT(p, PlayerCount);		// num players
+	ADD_INT(p, MaxClientsProtocol); // max players
+	ADD_INT(p, ClientCount);		// num clients
+	ADD_INT(p, MaxClientsProtocol); // max clients
 
 	if (Type == SERVERINFO_EXTENDED)
 		p.AddString("", 0); // extra info, reserved
@@ -1455,10 +1599,10 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 		Remaining = 24;
 		break;
 	case SERVERINFO_VANILLA:
-		Remaining = MAX_CLIENTS;
+		Remaining = VANILLA_MAX_CLIENTS;
 		break;
 	case SERVERINFO_INGAME:
-		Remaining = MAX_CLIENTS;
+		Remaining = VANILLA_MAX_CLIENTS;
 		break;
 	default:
 		dbg_assert(0, "caught earlier, unreachable");
@@ -1470,9 +1614,9 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	// For legacy 64p, send 24 players per packet.
 	// For extended, send as much players as possible.
 
-	for (int i = 0; i < MAX_CLIENTS; i++)
+	for (int i = 0; i < MAX_PLAYERS; i++)
 	{
-		if (m_aClients[i].m_State != CClient::STATE_EMPTY && !m_aClients[i].m_IsBot)
+		if (m_aClients[i].m_State != CClient::STATE_EMPTY)
 		{
 			if (Remaining == 0)
 			{
@@ -1485,13 +1629,13 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 				q.AddInt(PlayersStored); // offset
 				Remaining = 24;
 			}
+
 			if (Remaining > 0)
 			{
 				Remaining--;
 			}
 
 			int PreviousSize = q.Size();
-
 			q.AddString(ClientName(i), MAX_NAME_LENGTH); // client name
 			q.AddString(ClientClan(i), MAX_CLAN_LENGTH); // client clan
 
@@ -1607,7 +1751,9 @@ void CServer::UpdateRegisterServerInfo()
 	char aVersion[64];
 	char aMapSha256[SHA256_MAXSTRSIZE];
 
-	sha256_str(m_CurrentMapSha256, aMapSha256, sizeof(aMapSha256));
+	IEngineMap *pMap = MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_pLoadedMap;
+
+	sha256_str(pMap->Sha256(), aMapSha256, sizeof(aMapSha256));
 
 	char aInfo[16384];
 	str_format(aInfo, sizeof(aInfo),
@@ -1629,9 +1775,9 @@ void CServer::UpdateRegisterServerInfo()
 			   JsonBool(g_Config.m_Password[0]),
 			   EscapeJson(aGameType, sizeof(aGameType), GameServer()->GameType()),
 			   EscapeJson(aName, sizeof(aName), g_Config.m_SvName),
-			   EscapeJson(aMapName, sizeof(aMapName), m_aCurrentMap),
+			   EscapeJson(aMapName, sizeof(aMapName), MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_aName),
 			   aMapSha256,
-			   m_CurrentMapSize,
+			   pMap->GetCurrentMapSize(),
 			   EscapeJson(aVersion, sizeof(aVersion), GameServer()->Version()));
 
 	bool FirstPlayer = true;
@@ -1771,59 +1917,55 @@ char *CServer::GetMapName()
 	return pMapShortName;
 }
 
-int CServer::LoadMap(const char *pMapName)
+bool CServer::LoadMap(int ID)
 {
-	// DATAFILE *df;
 	char aBuf[512];
-	str_format(aBuf, sizeof(aBuf), "maps/%s.map", pMapName);
+	str_format(aBuf, sizeof(aBuf), "maps/%s", MultiWorlds()->GetWorld(ID)->m_aPath);
 
-	if (!m_pMap->Load(aBuf))
-		return 0;
-
-	// stop recording when we change map
-	m_DemoRecorder.Stop();
+	IEngineMap *pMap = MultiWorlds()->GetWorld(ID)->m_pLoadedMap;
+	if (!pMap->Load(aBuf))
+		return false;
 
 	// reinit snapshot ids
 	m_IDPool.TimeoutIDs();
 
-	m_CurrentMapSha256 = m_pMap->Sha256();
+	// get the sha256 and crc of the map
 	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(pMap->Sha256(), aSha256, sizeof(aSha256));
 	char aBufMsg[256];
-	sha256_str(m_CurrentMapSha256, aSha256, sizeof(aSha256));
 	str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
 	Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBufMsg);
-
-	// get the crc of the map
-	m_CurrentMapCrc = m_pMap->Crc();
-	str_format(aBufMsg, sizeof(aBufMsg), "%s crc is %08x", aBuf, m_CurrentMapCrc);
+	str_format(aBufMsg, sizeof(aBufMsg), "%s crc is %08x", aBuf, pMap->Crc());
 	Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBufMsg);
-
-	str_copy(m_aCurrentMap, pMapName, sizeof(m_aCurrentMap));
-	// map_set(df);
 
 	// load complete map into memory for download
 	{
 		IOHANDLE File = Storage()->OpenFile(aBuf, IOFLAG_READ, IStorage::TYPE_ALL);
-		m_CurrentMapSize = (int)io_length(File);
-		if (m_pCurrentMapData)
-			mem_free(m_pCurrentMapData);
-		m_pCurrentMapData = (unsigned char *)mem_alloc(m_CurrentMapSize, 1);
-		io_read(File, m_pCurrentMapData, m_CurrentMapSize);
+		pMap->SetCurrentMapSize((int)io_length(File));
+		pMap->SetCurrentMapData((unsigned char *)mem_alloc(pMap->GetCurrentMapSize(), 1));
+		io_read(File, pMap->GetCurrentMapData(), pMap->GetCurrentMapSize());
 		io_close(File);
 	}
-	return 1;
+	return true;
 }
 
 int CServer::Run()
 {
 	//
 	m_PrintCBIndex = Console()->RegisterPrintCallback(g_Config.m_ConsoleOutputLevel, SendRconLineAuthed, this);
+	m_MapChunksPerRequest = g_Config.m_SvMapDownloadSpeed;
+	m_DataChunksPerRequest = g_Config.m_SvMapDownloadSpeed;
 
-	// load map
-	if (!LoadMap(g_Config.m_SvMap))
+	// loading maps to memory
+	char aBuf[256];
+	for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
 	{
-		dbg_msg("server", "failed to load map. mapname='%s'", g_Config.m_SvMap);
-		return -1;
+		if (!LoadMap(i))
+		{
+			str_format(aBuf, sizeof(aBuf), "maps/%s the map is not loaded...", MultiWorlds()->GetWorld(i)->m_aPath);
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+			return -1;
+		}
 	}
 
 	// start server
@@ -1858,11 +2000,16 @@ int CServer::Run()
 
 	m_Econ.Init(Console(), &m_ServerBan);
 
-	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "server name is '%s'", g_Config.m_SvName);
 	Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 
-	GameServer()->OnInit();
+	if (!MultiWorlds()->GetSizeInitilized())
+	{
+		dbg_msg("server", "the worlds were not found or were not initialized");
+		return -1;
+	}
+	for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+		MultiWorlds()->GetWorld(i)->m_pGameServer->OnInit(i);
 	str_format(aBuf, sizeof(aBuf), "version %s", GameServer()->NetVersion());
 	Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 
@@ -1880,6 +2027,8 @@ int CServer::Run()
 		UpdateServerInfo();
 		while (m_RunServer)
 		{
+			bool ExistsPlayers = false;
+			bool ShouldSnap = false;
 			if (NonActive)
 				PumpNetwork(PacketWaiting);
 
@@ -1888,75 +2037,110 @@ int CServer::Run()
 			int64_t t = time_get();
 			int NewTicks = 0;
 
-			// load new map TODO: don't poll this
-			if (str_comp(g_Config.m_SvMap, m_aCurrentMap) != 0 || m_MapReload)
-			{
-				m_MapReload = 0;
-
-				// load map
-				if (LoadMap(g_Config.m_SvMap))
-				{
-					// new map loaded
-					GameServer()->OnShutdown();
-
-					for (int ClientID = 0; ClientID < MAX_CLIENTS; ClientID++)
-					{
-						if (m_aClients[ClientID].m_State <= CClient::STATE_AUTH)
-							continue;
-
-						SendMap(ClientID);
-
-						m_aClients[ClientID].Reset();
-						m_aClients[ClientID].m_State = CClient::STATE_CONNECTING;
-					}
-
-					m_GameStartTime = time_get();
-					m_CurrentGameTick = 0;
-					m_ServerInfoFirstRequest = 0;
-					Kernel()->ReregisterInterface(GameServer());
-					GameServer()->OnInit();
-					UpdateServerInfo(true);
-				}
-				else
-				{
-					str_format(aBuf, sizeof(aBuf), "failed to load map. mapname='%s'", g_Config.m_SvMap);
-					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
-					str_copy(g_Config.m_SvMap, m_aCurrentMap, sizeof(g_Config.m_SvMap));
-				}
-			}
-
 			while (t > TickStartTime(m_CurrentGameTick + 1))
 			{
 				m_CurrentGameTick++;
+				if ((m_CurrentGameTick % 2) == 0)
+					ShouldSnap = true;
+
 				NewTicks++;
 
 				// apply new input
-				for (int c = 0; c < MAX_CLIENTS; c++)
+				for (int c = 0; c < MAX_PLAYERS; c++)
 				{
-					if (m_aClients[c].m_State != CClient::STATE_INGAME)
+					if (m_aClients[c].m_State == CClient::STATE_EMPTY)
 						continue;
-					bool ClientHadInput = false;
-					for (auto &Input : m_aClients[c].m_aInputs)
+
+					ExistsPlayers = true;
+					for (auto &m_aInput : m_aClients[c].m_aInputs)
 					{
-						if (Input.m_GameTick == Tick())
+						if (m_aInput.m_GameTick == Tick())
 						{
-							GameServer()->OnClientPredictedInput(c, Input.m_aData);
-							ClientHadInput = true;
+							if (m_aClients[c].m_State == CClient::STATE_INGAME)
+							{
+								const int WorldID = m_aClients[c].m_WorldID;
+								GameServer(WorldID)->OnClientPredictedInput(c, m_aInput.m_aData);
+							}
 							break;
 						}
 					}
 				}
-
-				GameServer()->OnTick();
 			}
 
-			// snap game
+			MultiWorlds()->GetWorld(MAIN_WORLD_ID)->m_pGameServer->OnTickMainWorld();
+			for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+			{
+				IGameServer *pGameServer = MultiWorlds()->GetWorld(i)->m_pGameServer;
+				pGameServer->OnTick();
+			}
+
 			if (NewTicks)
 			{
-				if (g_Config.m_SvHighBandwidth || (m_CurrentGameTick % 2) == 0)
-					DoSnapshot();
+				// heavy reset server ((24 * 60) * 60) * SERVER_TICK_SPEED = 4320000 tick in day i think
+				if (false)
+				{
+					m_CurrentGameTick = 0;
+					m_GameStartTime = time_get();
+					m_ServerInfoFirstRequest = 0;
 
-				UpdateClientRconCommands();
+					if (!MultiWorlds()->LoadWorlds(this, Kernel(), Storage(), Console()))
+					{
+						str_format(aBuf, sizeof(aBuf), "interfaces for heavy reload could not be updated...");
+						Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+						return -1;
+					}
+
+					for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+					{
+						// load map data
+						if (!LoadMap(i))
+						{
+							str_format(aBuf, sizeof(aBuf), "maps/%s the map is not loaded...", MultiWorlds()->GetWorld(i)->m_aPath);
+							Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+							return -1;
+						}
+					}
+
+					if (m_HeavyReload)
+					{
+						// reload players
+						for (int ClientID = 0; ClientID < MAX_PLAYERS; ClientID++)
+						{
+							if (m_aClients[ClientID].m_State <= CClient::STATE_AUTH)
+								continue;
+
+							m_aClients[ClientID].Reset();
+							m_aClients[ClientID].m_State = CClient::STATE_CONNECTING;
+							m_aClients[ClientID].m_IsChangesWorld = false;
+							SendMap(ClientID);
+						}
+						m_HeavyReload = false;
+					}
+					else
+					{
+						Init();
+					}
+
+					// reinit gamecontext
+					for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+					{
+						IGameServer *pGameServer = MultiWorlds()->GetWorld(i)->m_pGameServer;
+						pGameServer->OnInit(i);
+					}
+
+					UpdateServerInfo(true);
+					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "A server was heavy reload.");
+				}
+				else
+				{
+					// snap game
+					if (g_Config.m_SvHighBandwidth || ShouldSnap)
+					{
+						for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+							DoSnapshot(i);
+					}
+					UpdateClientRconCommands();
+				}
 			}
 
 			// master server stuff
@@ -1978,36 +2162,14 @@ int CServer::Run()
 					break;
 				}
 			}
+			m_ReloadedWhenEmpty = false;
 
-			// wait for incoming data
-			if (NonActive)
-			{
-				if (g_Config.m_SvReloadWhenEmpty == 1)
-				{
-					m_MapReload = true;
-					g_Config.m_SvReloadWhenEmpty = 0;
-				}
-				else if (g_Config.m_SvReloadWhenEmpty == 2 && !m_ReloadedWhenEmpty)
-				{
-					m_MapReload = true;
-					m_ReloadedWhenEmpty = true;
-				}
+			set_new_tick();
+			t = time_get();
+			int x = (TickStartTime(m_CurrentGameTick + 1) - t) * 1000000 / time_freq() + 1;
 
-				if (g_Config.m_SvShutdownWhenEmpty)
-					m_RunServer = 0;
-				else
-					PacketWaiting = net_socket_read_wait(m_NetServer.Socket(), 1000000);
-			}
-			else
-			{
-				m_ReloadedWhenEmpty = false;
-
-				set_new_tick();
-				t = time_get();
-				int x = (TickStartTime(m_CurrentGameTick + 1) - t) * 1000000 / time_freq() + 1;
-
-				PacketWaiting = x > 0 ? net_socket_read_wait(m_NetServer.Socket(), x) : true;
-			}
+			PacketWaiting = x > 0 ? net_socket_read_wait(m_NetServer.Socket(), x) : true;
+			dbg_msg("sa", "%d", x);
 		}
 	}
 	// disconnect all clients on shutdown
@@ -2018,12 +2180,6 @@ int CServer::Run()
 
 		m_Econ.Shutdown();
 	}
-
-	GameServer()->OnShutdown();
-	m_pMap->Unload();
-
-	if (m_pCurrentMapData)
-		mem_free(m_pCurrentMapData);
 
 	m_pRegister->OnShutdown();
 	return 0;
@@ -2073,21 +2229,7 @@ void CServer::ConShutdown(IConsole::IResult *pResult, void *pUser)
 
 void CServer::DemoRecorder_HandleAutoStart()
 {
-	if (g_Config.m_SvAutoDemoRecord)
-	{
-		m_DemoRecorder.Stop();
-		char aFilename[128];
-		char aDate[20];
-		str_timestamp(aDate, sizeof(aDate));
-		str_format(aFilename, sizeof(aFilename), "demos/%s_%s.demo", "auto/autorecord", aDate);
-		m_DemoRecorder.Start(Storage(), m_pConsole, aFilename, GameServer()->NetVersion(), m_aCurrentMap, m_CurrentMapCrc, "server");
-		if (g_Config.m_SvAutoDemoMax)
-		{
-			// clean up auto recorded demos
-			CFileCollection AutoDemos;
-			AutoDemos.Init(Storage(), "demos/server", "autorecord", ".demo", g_Config.m_SvAutoDemoMax);
-		}
-	}
+	return; // I HATE THIS SHIT, it record 40GB demo file while I test server...
 }
 
 bool CServer::DemoRecorder_IsRecording()
@@ -2097,18 +2239,7 @@ bool CServer::DemoRecorder_IsRecording()
 
 void CServer::ConRecord(IConsole::IResult *pResult, void *pUser)
 {
-	CServer *pServer = (CServer *)pUser;
-	char aFilename[128];
-
-	if (pResult->NumArguments())
-		str_format(aFilename, sizeof(aFilename), "demos/%s.demo", pResult->GetString(0));
-	else
-	{
-		char aDate[20];
-		str_timestamp(aDate, sizeof(aDate));
-		str_format(aFilename, sizeof(aFilename), "demos/demo_%s.demo", aDate);
-	}
-	pServer->m_DemoRecorder.Start(pServer->Storage(), pServer->Console(), aFilename, pServer->GameServer()->NetVersion(), pServer->m_aCurrentMap, pServer->m_CurrentMapCrc, "server");
+	return; // Both.
 }
 
 void CServer::ConStopRecord(IConsole::IResult *pResult, void *pUser)
@@ -2118,7 +2249,7 @@ void CServer::ConStopRecord(IConsole::IResult *pResult, void *pUser)
 
 void CServer::ConMapReload(IConsole::IResult *pResult, void *pUser)
 {
-	((CServer *)pUser)->m_MapReload = 1;
+	((CServer *)pUser)->m_HeavyReload = true;
 }
 
 void CServer::ConLogout(IConsole::IResult *pResult, void *pUser)
@@ -2199,8 +2330,6 @@ void CServer::ConchainConsoleOutputLevelUpdate(IConsole::IResult *pResult, void 
 void CServer::RegisterCommands()
 {
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
-	m_pGameServer = Kernel()->RequestInterface<IGameServer>();
-	m_pMap = Kernel()->RequestInterface<IEngineMap>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
 	HttpInit(m_pStorage);
@@ -2224,7 +2353,8 @@ void CServer::RegisterCommands()
 	Console()->Chain("console_output_level", ConchainConsoleOutputLevelUpdate, this);
 	// register console commands in sub parts
 	m_ServerBan.InitServerBan(Console(), Storage(), this);
-	m_pGameServer->OnConsoleInit();
+	for (int i = 0; i < MultiWorlds()->GetSizeInitilized(); i++)
+		MultiWorlds()->GetWorld(i)->m_pGameServer->OnConsoleInit();
 }
 
 int CServer::SnapNewID()
@@ -2284,7 +2414,6 @@ int main(int argc, const char **argv) // ignore_convention
 	// create the components
 	IEngine *pEngine = CreateEngine("Teeworlds", 2);
 
-	IEngineMap *pEngineMap = CreateEngineMap();
 	IGameServer *pGameServer = CreateGameServer();
 	IConsole *pConsole = CreateConsole(CFGFLAG_SERVER | CFGFLAG_ECON);
 	IStorage *pStorage = CreateStorage("Teeworlds", IStorage::STORAGETYPE_SERVER, argc, argv); // ignore_convention
@@ -2298,21 +2427,17 @@ int main(int argc, const char **argv) // ignore_convention
 		return -1;
 	}
 
-	{
-		bool RegisterFail = false;
+	bool RegisterFail = false;
 
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pServer); // register as both
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pEngine);
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(static_cast<IEngineMap *>(pEngineMap)); // register as both
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(static_cast<IMap *>(pEngineMap));
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pGameServer);
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pConsole);
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pStorage);
-		RegisterFail = RegisterFail || !pKernel->RegisterInterface(pConfig);
+	RegisterFail = RegisterFail || !pKernel->RegisterInterface(pServer); // register as both
+	RegisterFail = RegisterFail || !pKernel->RegisterInterface(pEngine);
+	RegisterFail = RegisterFail || !pKernel->RegisterInterface(pConsole);
+	RegisterFail = RegisterFail || !pKernel->RegisterInterface(pStorage);
+	RegisterFail = RegisterFail || !pKernel->RegisterInterface(pConfig);
+	RegisterFail = RegisterFail || !pServer->MultiWorlds()->LoadWorlds(pServer, pKernel, pStorage, pConsole);
 
-		if (RegisterFail)
-			return -1;
-	}
+	if (RegisterFail)
+		return -1;
 
 	pEngine->Init();
 	pConfig->Init();
@@ -2338,8 +2463,6 @@ int main(int argc, const char **argv) // ignore_convention
 	delete pServer->m_pLocalization;
 	delete pServer;
 	delete pKernel;
-	delete pEngineMap;
-	delete pGameServer;
 	delete pConsole;
 	delete pStorage;
 	delete pConfig;

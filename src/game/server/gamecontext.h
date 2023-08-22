@@ -18,7 +18,7 @@
 #include "player.h"
 #include "botengine.h"
 
-#include "GameCore/TDController.h"
+#include "GameCore/TWorldController.h"
 
 #ifdef _MSC_VER
 typedef __int32 int32_t;
@@ -54,9 +54,11 @@ typedef unsigned __int64 uint64_t;
 */
 class CGameContext : public IGameServer
 {
-	IServer *m_pServer;
 	class IConsole *m_pConsole;
-	CLayers m_Layers;
+	class TWorldController *m_pTWorldController;
+	class CLayers* m_pLayers;
+
+	IServer *m_pServer;
 	CCollision m_Collision;
 	CNetObjHandler m_NetObjHandler;
 	CTuningParams m_Tuning;
@@ -65,7 +67,6 @@ class CGameContext : public IGameServer
 	static void ConLanguage(IConsole::IResult *pResult, void *pUserData);
 	static void ConAbout(IConsole::IResult *pResult, void *pUserData);
 	static void ConRegister(IConsole::IResult *pResult, void *pUserData);
-
 
 	static void ConsoleOutputCallback_Chat(const char *pStr, void *pUser);
 	static void ConTuneParam(IConsole::IResult *pResult, void *pUserData);
@@ -102,6 +103,9 @@ class CGameContext : public IGameServer
 	// Zomb2
 	int m_MessageReturn;
 
+	int m_WorldID;
+	int m_RespawnWorldID;
+
 public:
 	int m_ZoneHandle_TeeWorlds;
 
@@ -110,8 +114,9 @@ public:
 	class IConsole *Console() { return m_pConsole; }
 	CCollision *Collision() { return &m_Collision; }
 	CTuningParams *Tuning() { return &m_Tuning; }
-	virtual class CLayers *Layers() { return &m_Layers; }
 	CDB *DB() { return m_pDB; }
+
+	TWorldController *TDef() const { return m_pTWorldController; };
 
 	CGameContext();
 	~CGameContext();
@@ -126,6 +131,11 @@ public:
 
 	// helper functions
 	class CCharacter *GetPlayerChar(int ClientID);
+	CPlayer *GetPlayer(int ClientID, bool CheckAuthed = false, bool CheckCharacter = false);
+
+	bool IsPlayerEqualWorld(int ClientID, int WorldID = -1) const;
+	bool IsPlayersNearby(vec2 Pos, float Distance) const;
+	int GetRespawnWorld() const { return m_RespawnWorldID; }
 
 	int m_LockTeams;
 
@@ -188,11 +198,12 @@ public:
 	void SwapTeams();
 
 	// engine events
-	virtual void OnInit();
+	virtual void OnInit(int WorldID);
 	virtual void OnConsoleInit();
 	virtual void OnShutdown();
 
 	virtual void OnTick();
+	virtual void OnTickMainWorld();
 	virtual void OnPreSnap();
 	virtual void OnSnap(int ClientID);
 	virtual void OnPostSnap();
@@ -225,6 +236,12 @@ public:
 	void CheckBotNumber();
 
 	class CBotEngine *m_pBotEngine;
+
+	bool PlayerExists(int ClientID) const override { return m_apPlayers[ClientID]; }
+	void PrepareClientChangeWorld(int ClientID) override;
+	void ClearClientData(int ClientID) override;
+
+	int GetWorldID() const { return m_WorldID; }
 };
 
 inline int64_t CmaskAll() { return -1LL; }

@@ -251,7 +251,6 @@ public:
 
 	struct CPath {
 		vec2 *m_pVertices;
-		int *m_pSnapID;
 		int m_Size;
 		int m_MaxSize;
 	} m_aPaths[MAX_CLIENTS];

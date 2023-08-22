@@ -23,6 +23,7 @@ public:
 	void SetTeam(int Team, bool DoChatMsg = true);
 	int GetTeam() const { return m_Team; };
 	int GetCID() const { return m_ClientID; };
+	int GetPlayerWorldID() const;
 
 	void Tick();
 	void PostTick();

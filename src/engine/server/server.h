@@ -18,7 +18,7 @@ class CSnapIDPool
 {
 	enum
 	{
-		MAX_IDS = 16*1024,
+		MAX_IDS = 32*1024,
 	};
 
 	class CID
@@ -73,11 +73,13 @@ class CServer : public IServer
 	class IConsole *m_pConsole;
 	class IStorage *m_pStorage;
 	class IRegister *m_pRegister;
+	class CMultiWorlds* m_pMultiWorlds;
 public:
-	class IGameServer *GameServer() { return m_pGameServer; }
+	class IGameServer* GameServer(int WorldID = 0) override;
+	class IGameServer* GameServerPlayer(int ClientID) override;
 	class IConsole *Console() { return m_pConsole; }
 	class IStorage *Storage() { return m_pStorage; }
-	
+	class CMultiWorlds* MultiWorlds() const { return m_pMultiWorlds; }
 
 	enum
 	{
@@ -132,16 +134,30 @@ public:
 		int m_Score;
 		int m_Authed;
 		int m_AuthTries;
+		int m_Version;
 
 		bool m_IsBot;
 
+		int m_WorldID;
+		int m_OldWorldID;
+		bool m_IsChangesWorld;
+
+		int m_NextMapChunk;
+		bool m_Quitting;
 		const IConsole::CCommandInfo *m_pRconCmdToSend;
 
 		void Reset();
 
 		char m_aLanguage[16];
-		NETADDR m_Addr;
 		bool m_CustClt;
+
+		// DDRace
+		NETADDR m_Addr;
+		bool m_GotDDNetVersionPacket;
+		bool m_DDNetVersionSettled;
+		int m_DDNetVersion;
+		char m_aDDNetVersionStr[64];
+		CUuid m_ConnectionID;
 	};
 
 	CClient m_aClients[MAX_CLIENTS];
@@ -164,28 +180,31 @@ public:
 	int m_RconAuthLevel;
 	int m_PrintCBIndex;
 	bool m_ReloadedWhenEmpty;
+	bool m_HeavyReload;
 
 	int64 m_Lastheartbeat;
 	//static NETADDR4 master_server;
 
-	char m_aCurrentMap[64];
-	SHA256_DIGEST m_CurrentMapSha256;
-	unsigned m_CurrentMapCrc;
-	unsigned char *m_pCurrentMapData;
-	int m_CurrentMapSize;
-
 	bool m_ServerInfoHighLoad;
 	int64 m_ServerInfoFirstRequest;
 	int m_ServerInfoNumRequests;
+
+	// map
+	enum
+	{
+		MAP_CHUNK_SIZE=NET_MAX_PAYLOAD-NET_MAX_CHUNKHEADERSIZE-4, // msg type
+	};
+	int m_MapChunksPerRequest;
+	int m_DataChunksPerRequest;
 
 	CDemoRecorder m_DemoRecorder;
 
 	CServer();
 	~CServer();
 
-	int TrySetClientName(int ClientID, const char *pName);
+	int TrySetClientName(int ClientID, const char *pName, bool IsBot = false);
 
-	virtual void SetClientName(int ClientID, const char *pName);
+	virtual void SetClientName(int ClientID, const char *pName, bool IsBot = false);
 	virtual void SetClientClan(int ClientID, char const *pClan);
 	virtual void SetClientCountry(int ClientID, int Country);
 	virtual void SetClientScore(int ClientID, int Score);
@@ -211,9 +230,9 @@ public:
 	bool ClientIngame(int ClientID);
 	int MaxClients() const;
 
-	int SendMsg(CMsgPacker *pMsg, int Flags, int ClientID) override;
+	int SendMsg(CMsgPacker* pMsg, int Flags, int ClientID, int64 Mask = -1, int WorldID = -1) override;
 
-	void DoSnapshot();
+	void DoSnapshot(int WorldID);
 
 	int NewBot(int ClientID);
 	int DelBot(int ClientID);
@@ -225,6 +244,7 @@ public:
 
 	void SendRconType(int ClientID, bool UsernameReq);
 	void SendCapabilities(int ClientID);
+	void SendMapData(int ClientID, int Chunk);
 	void SendMap(int ClientID);
 	void SendConnectionReady(int ClientID);
 	void SendRconLine(int ClientID, const char *pLine);
@@ -271,7 +291,7 @@ public:
 	void PumpNetwork(bool PacketWaiting);
 
 	char *GetMapName();
-	int LoadMap(const char *pMapName);
+	bool LoadMap(int ID);
 
 	int Run();
 
@@ -300,6 +320,33 @@ public:
 	virtual void SetClientLanguage(int ClientID, const char* pLanguage);
 	virtual int* GetIdMap(int ClientID);
 	virtual void SetCustClt(int ClientID);
+
+	bool IsClientChangesWorld(int ClientID) override;
+	void ChangeWorld(int ClientID, int NewWorldID) override;
+	int GetClientWorldID(int ClientID) override;
+
+	const char* GetWorldName(int WorldID) override;
+	int GetWorldsSize() const override;
+
+};
+
+class _StoreMultiworldIdentifiableStaticData
+{
+	inline static class IServer* m_pServer {};
+
+public:
+	class IServer* Server() const { return m_pServer; }
+	static void Init(IServer* pServer) { m_pServer = pServer; }
+};
+
+template < typename T >
+class MultiworldIdentifiableStaticData : public _StoreMultiworldIdentifiableStaticData
+{
+protected:
+	inline static T m_pData {};
+
+public:
+	static T& Data() { return m_pData; }
 };
 
 #endif

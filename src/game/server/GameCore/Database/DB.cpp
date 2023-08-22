@@ -1,7 +1,6 @@
 /* DB */
 #include <engine/shared/config.h>
 #include <game/server/gamecontext.h>
-
 #include "DB.h"
 
 CDB::CDB()
@@ -17,7 +16,7 @@ bool CDB::Connect()
         m_Driver = get_driver_instance();
         char aBuf[64];
         str_format(aBuf, sizeof(aBuf), "tcp://%s:%d", g_Config.m_SvMySqlHostname, g_Config.m_SvMySqlPort);
-        m_Connection = m_Driver->connect(aBuf, g_Config.m_SvMySqlHostname, g_Config.m_SvMySqlPassword);
+        m_Connection = m_Driver->connect(aBuf, g_Config.m_SvMySqlUsername, g_Config.m_SvMySqlPassword);
         m_Statement = m_Connection->createStatement();
         m_Connection->setSchema(g_Config.m_SvMySqlDatabase);
     }
@@ -26,6 +25,7 @@ bool CDB::Connect()
         dbg_msg("SQLError", "Error (%d) : %s", e.getErrorCode(), e.what());
         return false;
     }
+    return true;
 }
 
 void CDB::Disconnect()

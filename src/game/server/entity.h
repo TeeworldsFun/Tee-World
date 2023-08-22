@@ -3,52 +3,8 @@
 #ifndef GAME_SERVER_ENTITY_H
 #define GAME_SERVER_ENTITY_H
 
-#include <new>
-#include <base/vmath.h>
-#include <game/server/gameworld.h>
-
-#define MACRO_ALLOC_HEAP() \
-	public: \
-	void *operator new(size_t Size) \
-	{ \
-		void *p = mem_alloc(Size, 1); \
-		/*dbg_msg("", "++ %p %d", p, size);*/ \
-		mem_zero(p, Size); \
-		return p; \
-	} \
-	void operator delete(void *pPtr) \
-	{ \
-		/*dbg_msg("", "-- %p", p);*/ \
-		mem_free(pPtr); \
-	} \
-	private:
-
-#define MACRO_ALLOC_POOL_ID() \
-	public: \
-	void *operator new(size_t Size, int id); \
-	void operator delete(void *p); \
-	private:
-
-#define MACRO_ALLOC_POOL_ID_IMPL(POOLTYPE, PoolSize) \
-	static char ms_PoolData##POOLTYPE[PoolSize][sizeof(POOLTYPE)] = {{0}}; \
-	static int ms_PoolUsed##POOLTYPE[PoolSize] = {0}; \
-	void *POOLTYPE::operator new(size_t Size, int id) \
-	{ \
-		dbg_assert(sizeof(POOLTYPE) == Size, "size error"); \
-		dbg_assert(!ms_PoolUsed##POOLTYPE[id], "already used"); \
-		/*dbg_msg("pool", "++ %s %d", #POOLTYPE, id);*/ \
-		ms_PoolUsed##POOLTYPE[id] = 1; \
-		mem_zero(ms_PoolData##POOLTYPE[id], Size); \
-		return ms_PoolData##POOLTYPE[id]; \
-	} \
-	void POOLTYPE::operator delete(void *p) \
-	{ \
-		int id = (POOLTYPE*)p - (POOLTYPE*)ms_PoolData##POOLTYPE; \
-		dbg_assert(ms_PoolUsed##POOLTYPE[id], "not used"); \
-		/*dbg_msg("pool", "-- %s %d", #POOLTYPE, id);*/ \
-		ms_PoolUsed##POOLTYPE[id] = 0; \
-		mem_zero(ms_PoolData##POOLTYPE[id], sizeof(POOLTYPE)); \
-	}
+#include "alloc.h"
+#include "gameworld.h"
 
 /*
 	Class: Entity
@@ -58,50 +14,89 @@ class CEntity
 {
 	MACRO_ALLOC_HEAP()
 
-	friend class CGameWorld;	// entity list handling
+private:
+	/* Friend classes */
+	friend class CGameWorld; // for entity list handling
+
+	/* Identity */
+	class CGameWorld *m_pGameWorld;
+
 	CEntity *m_pPrevTypeEntity;
 	CEntity *m_pNextTypeEntity;
 
-	class CGameWorld *m_pGameWorld;
-protected:
-	bool m_MarkedForDestroy;
 	int m_ID;
 	int m_ObjType;
-public:
-	CEntity(CGameWorld *pGameWorld, int Objtype);
-	virtual ~CEntity();
-
-	class CGameWorld *GameWorld() { return m_pGameWorld; }
-	class CGameContext *GameServer() { return GameWorld()->GameServer(); }
-	class IServer *Server() { return GameWorld()->Server(); }
-
-
-	CEntity *TypeNext() { return m_pNextTypeEntity; }
-	CEntity *TypePrev() { return m_pPrevTypeEntity; }
 
 	/*
-		Function: destroy
-			Destorys the entity.
+		Variable: m_ProximityRadius
+			Contains the physical size of the entity.
+	*/
+	float m_ProximityRadius;
+
+	/* State */
+	bool m_MarkedForDestroy;
+
+protected:
+	/* State */
+
+	/*
+		Variable: m_Pos, m_PosTo
+			Contains the current posititon of the entity.
+	*/
+	vec2 m_Pos;
+	vec2 m_PosTo;
+
+	/* Getters */
+	int GetID() const					{ return m_ID; }
+
+public:
+	/* Constructor */
+	CEntity(CGameWorld *pGameWorld, int Objtype, vec2 Pos, int ProximityRadius=0);
+
+	/* Destructor */
+	virtual ~CEntity();
+
+	/* Objects */
+	class CGameWorld *GameWorld() const { return m_pGameWorld; }
+	class CGameContext *GameServer() const { return m_pGameWorld->GameServer(); }
+	class IServer *Server() const { return m_pGameWorld->Server(); }
+
+	/* Getters */
+	CEntity *TypeNext() const { return m_pNextTypeEntity; }
+	CEntity *TypePrev() const { return m_pPrevTypeEntity; }
+	const vec2 &GetPos() const			{ return m_Pos; }
+	const vec2 &GetPosTo() const			{ return m_PosTo; }
+	float GetProximityRadius() const	{ return m_ProximityRadius; }
+	bool IsMarkedForDestroy() const		{ return m_MarkedForDestroy; }
+
+	/* Setters */
+	void MarkForDestroy()				{ m_MarkedForDestroy = true; }
+
+	/* Other functions */
+
+	/*
+		Function: Destroy
+			Destroys the entity.
 	*/
 	virtual void Destroy() { delete this; }
 
 	/*
-		Function: reset
+		Function: Reset
 			Called when the game resets the map. Puts the entity
-			back to it's starting state or perhaps destroys it.
+			back to its starting state or perhaps destroys it.
 	*/
 	virtual void Reset() {}
 
 	/*
-		Function: tick
-			Called progress the entity to the next tick. Updates
-			and moves the entity to it's new state and position.
+		Function: Tick
+			Called to progress the entity to the next tick. Updates
+			and moves the entity to its new state and position.
 	*/
 	virtual void Tick() {}
 
 	/*
-		Function: tick_defered
-			Called after all entities tick() function has been called.
+		Function: TickDefered
+			Called after all entities Tick() function has been called.
 	*/
 	virtual void TickDefered() {}
 
@@ -117,7 +112,7 @@ public:
 			client.
 
 		Arguments:
-			snapping_client - ID of the client which snapshot is
+			SnappingClient - ID of the client which snapshot is
 				being generated. Could be -1 to create a complete
 				snapshot of everything in the game for demo
 				recording.
@@ -125,12 +120,19 @@ public:
 	virtual void Snap(int SnappingClient) {}
 
 	/*
+		Function: PostSnap
+			Called after all entities Snap(int SnappingClient) function has been called.
+	*/
+	virtual void PostSnap() {}
+
+
+	/*
 		Function: networkclipped(int snapping_client)
 			Performs a series of test to see if a client can see the
 			entity.
 
 		Arguments:
-			snapping_client - ID of the client which snapshot is
+			SnappingClient - ID of the client which snapshot is
 				being generated. Could be -1 to create a complete
 				snapshot of everything in the game for demo
 				recording.
@@ -138,38 +140,43 @@ public:
 		Returns:
 			Non-zero if the entity doesn't have to be in the snapshot.
 	*/
-	int NetworkClipped(int SnappingClient);
-	int NetworkClipped(int SnappingClient, vec2 CheckPos);
+	int NetworkClipped(int SnappingClient) const;
+	int NetworkClipped(int SnappingClient, vec2 CheckPos) const;
 
-	bool GameLayerClipped(vec2 CheckPos);
-
-	/*
-		Variable: proximity_radius
-			Contains the physical size of the entity.
-	*/
-	float m_ProximityRadius;
-
-	/*
-		Variable: pos
-			Contains the current posititon of the entity.
-	*/
-	vec2 m_Pos;
-	vec2 GetPos() const { return m_Pos; }
+	bool GameLayerClipped(vec2 CheckPos) const;
 };
 
-class CAnimatedEntity : public CEntity
+/*
+	Class: CFlashingTick
+		CEntityComponent.
+*/
+class CFlashingTick
 {
-protected:
-	vec2 m_Pivot;
-	vec2 m_RelPosition;
-	int m_PosEnv;
-
-protected:
-	virtual void Tick();
+	int *m_LifeSpan;
+	int m_Timer;
+	bool m_Flashing;
 
 public:
-	CAnimatedEntity(CGameWorld *pGameWorld, int Objtype, vec2 Pivot);
-	CAnimatedEntity(CGameWorld *pGameWorld, int Objtype, vec2 Pivot, vec2 RelPosition, int PosEnv);
+	CFlashingTick() = default;
+
+	void InitFlashing(int* EntityLifeSpan) { m_LifeSpan = EntityLifeSpan; }
+	bool IsFlashing() const { return m_Flashing; }
+
+	void OnTick()
+	{
+		if((*m_LifeSpan) < 150)
+		{
+			m_Timer--;
+			if(m_Timer > 5)
+				m_Flashing = true;
+			else
+			{
+				m_Flashing = false;
+				if(m_Timer <= 0)
+					m_Timer = 0;
+			}
+		}
+	}
 };
 
 #endif

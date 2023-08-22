@@ -261,10 +261,6 @@ void CBot::Tick()
 	const CCharacterCore *pMe = m_pPlayer->GetCharacter()->GetCore();
 
 	UpdateTarget();
-
-	if (m_ComputeTarget.m_NeedUpdate)
-		dbg_msg("bot", "new target pos=(%f,%f) type=%d", m_ComputeTarget.m_Pos.x, m_ComputeTarget.m_Pos.y, m_ComputeTarget.m_Type);
-
 	UpdateEdge();
 
 	mem_zero(&m_InputData, sizeof(m_InputData));
@@ -698,38 +694,5 @@ void CBot::MakeChoice(bool UseTarget)
 
 void CBot::Snap(int SnappingClient)
 {
-	if (SnappingClient == -1)
-		return;
-
-	CCharacter *pMe = m_pPlayer->GetCharacter();
-	if (!pMe)
-		return;
-
-	vec2 Pos = pMe->GetCore()->m_Pos;
-	{
-		CNetObj_Laser *pObj = static_cast<CNetObj_Laser *>(GameServer()->Server()->SnapNewItem(NETOBJTYPE_LASER, GetID(), sizeof(CNetObj_Laser)));
-		if (!pObj)
-			return;
-
-		pObj->m_X = (int)(m_RealTarget.x);
-		pObj->m_Y = (int)(m_RealTarget.y);
-		pObj->m_FromX = (int)Pos.x;
-		pObj->m_FromY = (int)Pos.y;
-		pObj->m_StartTick = GameServer()->Server()->Tick();
-	}
-	for (int l = 0; l < m_pPath->m_Size - 1; l++)
-	{
-		vec2 From = m_pPath->m_pVertices[l];
-		vec2 To = m_pPath->m_pVertices[l + 1];
-		if (BotEngine()->NetworkClipped(SnappingClient, To) && BotEngine()->NetworkClipped(SnappingClient, From))
-			continue;
-		CNetObj_Laser *pObj = static_cast<CNetObj_Laser *>(GameServer()->Server()->SnapNewItem(NETOBJTYPE_LASER, m_pPath->m_pSnapID[l], sizeof(CNetObj_Laser)));
-		if (!pObj)
-			return;
-		pObj->m_X = (int)To.x;
-		pObj->m_Y = (int)To.y;
-		pObj->m_FromX = (int)From.x;
-		pObj->m_FromY = (int)From.y;
-		pObj->m_StartTick = GameServer()->Server()->Tick();
-	}
+	return;
 }

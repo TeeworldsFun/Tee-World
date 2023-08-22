@@ -42,10 +42,6 @@ public:
 
 	void SetTime(double Time) { m_Time = Time; }
 
-	//This function return an Handle to access all zone layers with the name "pName"
-	int GetZoneHandle(const char* pName);
-	int GetZoneValueAt(int ZoneHandle, float x, float y);
-
 	//Zomb2
 	bool CheckTiles(vec2 Pos, int Deepness);
 	bool CheckParable(vec2 Pos, int Wideness, int Direction);

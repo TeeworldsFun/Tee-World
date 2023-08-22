@@ -5,7 +5,7 @@
 #include "player.h"
 #include "bot.h"
 
-MACRO_ALLOC_POOL_ID_IMPL(CPlayer, MAX_CLIENTS)
+MACRO_ALLOC_POOL_ID_IMPL(CPlayer, MAX_CLIENTS * ENGINE_MAX_WORLDS + MAX_CLIENTS)
 
 IServer *CPlayer::Server() const { return m_pGameServer->Server(); }
 
@@ -114,7 +114,7 @@ void CPlayer::Tick()
 		{
 			if (m_pCharacter->IsAlive())
 			{
-				m_ViewPos = m_pCharacter->m_Pos;
+				m_ViewPos = m_pCharacter->GetPos();
 			}
 			else
 			{
@@ -307,7 +307,7 @@ void CPlayer::OnDisconnect(const char *pReason)
 {
 	KillCharacter();
 
-	if (Server()->ClientIngame(m_ClientID) && !m_Zomb)
+	if (Server()->ClientIngame(m_ClientID) && !m_Zomb || Server()->IsClientChangesWorld(GetCID()) && GameServer()->IsPlayerEqualWorld(GetCID()))
 	{
 		char aBuf[512];
 		if (pReason && *pReason)

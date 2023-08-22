@@ -7,6 +7,8 @@
 #include "botengine.h"
 #include "bot.h"
 
+#include <game/mapitems.h>
+
 CGraph::CGraph()
 {
 	m_NumVertices = 0;
@@ -160,12 +162,6 @@ void CBotEngine::Free()
 	{
 		if(m_aPaths[c].m_pVertices)
 			mem_free(m_aPaths[c].m_pVertices);
-		if(m_aPaths[c].m_pSnapID)
-		{
-			for(int i = 0 ; i < m_aPaths[c].m_MaxSize; i++)
-				GameServer()->Server()->SnapFreeID(m_aPaths[c].m_pSnapID[i]);
-			mem_free(m_aPaths[c].m_pSnapID);
-		}
 	}
 	mem_zero(m_aPaths,sizeof(m_aPaths));
 }
@@ -287,9 +283,6 @@ void CBotEngine::Init(CTile *pTiles, int Width, int Height)
 		{
 			m_aPaths[c].m_MaxSize = m_Graph.m_Diameter+2;
 			m_aPaths[c].m_pVertices = (vec2*) mem_alloc(m_aPaths[c].m_MaxSize*sizeof(vec2),1);
-			m_aPaths[c].m_pSnapID = (int*) mem_alloc(m_aPaths[c].m_MaxSize*sizeof(int),1);
-			for(int i = 0 ; i < m_aPaths[c].m_MaxSize; i++)
-				m_aPaths[c].m_pSnapID[i] = GameServer()->Server()->SnapNewID();
 			m_aPaths[c].m_Size = 0;
 		}
 	}

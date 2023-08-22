@@ -72,6 +72,7 @@ protected:
 
 public:
 	const char *m_pGameType;
+	const char *m_pGameName;
 
 	bool IsTeamplay() const;
 	bool IsGameOver() const { return m_GameOverTick != -1; }
@@ -113,7 +114,7 @@ public:
 		Returns:
 			bool?
 	*/
-	virtual bool OnEntity(const char* pName, vec2 Pivot, vec2 P0, vec2 P1, vec2 P2, vec2 P3, int PosEnv);
+	virtual bool OnEntity(int Index, vec2 Pos);
 
 	/*
 		Function: on_CCharacter_spawn

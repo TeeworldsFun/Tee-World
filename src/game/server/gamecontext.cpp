@@ -9,12 +9,13 @@
 #include <game/version.h>
 #include <game/collision.h>
 #include <game/gamecore.h>
-#include "gamemodes/def.h"
+#include "gamemodes/Z.h"
 
 #include <teeuniverses/components/localization.h>
 #include "GameCore/Components/Account/Account.h"
 #include "bot.h"
 
+#include <game/mapitems.h>
 enum
 {
 	RESET,
@@ -43,6 +44,7 @@ void CGameContext::Construct(int Resetting)
 	m_pBotEngine = new CBotEngine(this);
 
 	m_pDB = new CDB();
+	m_pLayers = nullptr;
 }
 
 CGameContext::CGameContext(int Resetting)
@@ -148,7 +150,7 @@ void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamag
 		int Num = m_World.FindEntities(Pos, Radius, (CEntity **)apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 		for (int i = 0; i < Num; i++)
 		{
-			vec2 Diff = apEnts[i]->m_Pos - Pos;
+			vec2 Diff = apEnts[i]->GetPos() - Pos;
 			vec2 ForceDir(0, 1);
 			float l = length(Diff);
 			if (l)
@@ -428,14 +430,14 @@ void CGameContext::OnTick()
 	CheckPureTuning();
 
 	// Check bot number
-	CheckBotNumber();
+	// CheckBotNumber();
 
 	m_Collision.SetTime(m_pController->GetTime());
-	
+
 	// Test basic move for bots
-	for(int i = 0; i < MAX_CLIENTS ; i++)
+	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
-		if(!m_apPlayers[i] || !m_apPlayers[i]->m_IsBot)
+		if (!m_apPlayers[i] || !m_apPlayers[i]->m_IsBot || m_apPlayers[i]->GetPlayerWorldID() != m_WorldID)
 			continue;
 		CNetObj_PlayerInput Input = m_apPlayers[i]->m_pBot->GetLastInputData();
 		m_apPlayers[i]->OnPredictedInput(&Input);
@@ -450,17 +452,18 @@ void CGameContext::OnTick()
 
 	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
-		if (m_apPlayers[i])
-		{
-			m_apPlayers[i]->Tick();
-			m_apPlayers[i]->PostTick();
-		}
+		if (!Server()->ClientIngame(i) || !m_apPlayers[i] || m_apPlayers[i]->GetPlayerWorldID() != m_WorldID)
+			continue;
+
+		m_apPlayers[i]->Tick();
+		m_apPlayers[i]->PostTick();
+		dbg_msg("AAA", "RUN");
 	}
 
-	//Zomb2 - fixing a very little bug
-	if(m_MessageReturn)
+	// Zomb2 - fixing a very little bug
+	if (m_MessageReturn)
 		m_MessageReturn--;
-	if(m_MessageReturn == 1)
+	if (m_MessageReturn == 1)
 	{
 		CNetMsg_Sv_Motd Msg;
 		Msg.m_pMessage = g_Config.m_SvMotd;
@@ -545,9 +548,9 @@ void CGameContext::OnTick()
 		}
 	}
 	// Test basic move for bots
-	for(int i = 0; i < MAX_CLIENTS ; i++)
+	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
-		if(!m_apPlayers[i] || !m_apPlayers[i]->m_IsBot)
+		if (!m_apPlayers[i] || !m_apPlayers[i]->m_IsBot)
 			continue;
 		CNetObj_PlayerInput Input = m_apPlayers[i]->m_pBot->GetInputData();
 		m_apPlayers[i]->OnDirectInput(&Input);
@@ -595,33 +598,23 @@ void CGameContext::OnClientEnter(int ClientID)
 
 void CGameContext::OnClientConnected(int ClientID)
 {
-	if(ClientID >= MAX_PLAYERS)
+	if (ClientID >= MAX_PLAYERS)
 		return;
 
-	//Check if the slot is used by a bot
-	if(m_apPlayers[ClientID] && m_apPlayers[ClientID]->m_IsBot)
+	// Check if the slot is used by a bot
+	if (m_apPlayers[ClientID] && m_apPlayers[ClientID]->m_IsBot)
 	{
 		delete m_apPlayers[ClientID];
 		m_apPlayers[ClientID] = 0;
 	}
 
-	if (!m_pController->m_Wave) // let the round start
+	if (!m_apPlayers[ClientID])
 	{
-		m_pController->DoWarmup(g_Config.m_SvWarmup);
-		m_pController->m_aTeamscore[TEAM_RED] = 0;
-		m_pController->m_aTeamscore[TEAM_BLUE] = g_Config.m_SvLives;
+		const int AllocMemoryCell = ClientID + m_WorldID * MAX_CLIENTS;
+		m_apPlayers[ClientID] = new (AllocMemoryCell) CPlayer(this, ClientID, TEAM_RED, 0);
 	}
-	m_apPlayers[ClientID] = new (ClientID) CPlayer(this, ClientID, 0, 0);
-	
-	CheckBotNumber();
 
-#ifdef CONF_DEBUG
-	if (g_Config.m_DbgDummies)
-	{
-		if (ClientID >= MAX_CLIENTS - g_Config.m_DbgDummies)
-			return;
-	}
-#endif
+	// CheckBotNumber();
 
 	// send active vote
 	if (m_VoteCloseTime)
@@ -824,9 +817,9 @@ void CGameContext::OnMessage(int MsgID, CUnpacker *pUnpacker, int ClientID)
 				{
 					SendChatTarget(ClientID, "Invalid client id to kick");
 					return;
-				}	
+				}
 
-				if(m_apPlayers[KickID]->m_IsBot)
+				if (m_apPlayers[KickID]->m_IsBot)
 				{
 					SendChatTarget(ClientID, "You can't kick server bots");
 					return;
@@ -869,7 +862,7 @@ void CGameContext::OnMessage(int MsgID, CUnpacker *pUnpacker, int ClientID)
 					SendChatTarget(ClientID, "Invalid client id to move");
 					return;
 				}
-				if(m_apPlayers[SpectateID]->m_IsBot)
+				if (m_apPlayers[SpectateID]->m_IsBot)
 				{
 					SendChatTarget(ClientID, "You can't move server bots");
 					return;
@@ -1651,7 +1644,7 @@ void CGameContext::ConRegister(IConsole::IResult *pResult, void *pUserData)
 	int ClientID = pResult->GetClientID();
 	if (pResult->NumArguments() < 2)
 	{
-		pThis->SendChatTarget(ClientID, _("使用指令 /register <肉体之名> <肉体之匙> 来创造你在异仙界的血肉体(不用加上 '<' 和 '>' )"));
+		pThis->SendChatTarget(ClientID, _("使用指令 /register <肉体之名> <肉体之匙> 来创造你在Tee界的血肉体(不用加上 '<' 和 '>' )"));
 		pThis->SendChatTarget(ClientID, _("请牢记你在异仙界的肉体名以及此体之匙，否则你的血肉将永远失去魂体"));
 		return;
 	}
@@ -1663,8 +1656,7 @@ void CGameContext::ConRegister(IConsole::IResult *pResult, void *pUserData)
 	if (str_length(Username) > 15 || str_length(Username) < 4 || str_length(Password) > 15 || str_length(Password) < 4)
 		return pThis->SendChatTarget(ClientID, _("血肉之名与血肉之匙必须被控制在4 - 15个仙界之字之拼音的范围内"));
 
-	//pThis->Account()->Register(pResult->GetClientID(), Username, Password);
-	return;
+	pThis->TDef()->Account()->Register(pResult->GetClientID(), Username, Password);
 }
 
 void CGameContext::SetClientLanguage(int ClientID, const char *pLanguage)
@@ -1719,109 +1711,38 @@ void CGameContext::OnConsoleInit()
 	Console()->Chain("sv_motd", ConchainSpecialMotdupdate, this);
 }
 
-void CGameContext::OnInit(/*class IKernel *pKernel*/)
+void CGameContext::OnInit(int WorldID)
 {
 	m_pServer = Kernel()->RequestInterface<IServer>();
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_World.SetGameServer(this);
 	m_Events.SetGameServer(this);
+	m_WorldID = WorldID;
 
 	for (int i = 0; i < NUM_NETOBJTYPES; i++)
 		Server()->SnapSetStaticsize(i, m_NetObjHandler.GetObjSize(i));
 
-	m_Layers.Init(Kernel());
-	m_Collision.Init(&m_Layers);
-
-	// Get zones
-	m_ZoneHandle_TeeWorlds = m_Collision.GetZoneHandle("teeworlds");
+	m_pLayers = new CLayers();
+	m_pLayers->Init(Kernel(), WorldID);
+	m_Collision.Init(m_pLayers);
+	m_pTWorldController = new TWorldController(this);
 
 	// select gametype
-	m_pController = new CGameControllerDEF(this);
+	m_pController = new CGameControllerZ(this);
 
 	// create all entities from the game layer
-	CMapItemLayerTilemap *pTileMap = m_Layers.GameLayer();
-	CTile *pTiles = (CTile *)Kernel()->RequestInterface<IMap>()->GetData(pTileMap->m_Data);
-
-	for (int y = 0; y < pTileMap->m_Height; y++)
+	// initialize cores
+	CMapItemLayerTilemap *pTileMap = m_pLayers->GameLayer();
+	CTile *pTiles = (CTile *)Kernel()->RequestInterface<IMap>(WorldID)->GetData(pTileMap->m_Data);
+	for(int y = 0; y < pTileMap->m_Height; y++)
 	{
-		for (int x = 0; x < pTileMap->m_Width; x++)
+		for(int x = 0; x < pTileMap->m_Width; x++)
 		{
-			int Index = pTiles[y * pTileMap->m_Width + x].m_Index;
-
-			if (Index >= ENTITY_OFFSET)
+			const int Index = pTiles[y*pTileMap->m_Width+x].m_Index;
+			if(Index >= ENTITY_OFFSET)
 			{
-				vec2 Pivot(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
-				vec2 P0(x * 32.0f, y * 32.0f);
-				vec2 P1((x + 1) * 32.0f, y * 32.0f);
-				vec2 P2(x * 32.0f, (y + 1) * 32.0f);
-				vec2 P3((x + 1) * 32.0f, (y + 1) * 32.0f);
-				switch (Index - ENTITY_OFFSET)
-				{
-				case ENTITY_SPAWN:
-					m_pController->OnEntity("spawn", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_SPAWN_RED:
-					m_pController->OnEntity("spawnRed", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_SPAWN_BLUE:
-					m_pController->OnEntity("spawnBlue", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_FLAGSTAND_RED:
-					m_pController->OnEntity("twFlagStandRed", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_FLAGSTAND_BLUE:
-					m_pController->OnEntity("twFlagStandBlue", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_ARMOR_1:
-					m_pController->OnEntity("armor", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_HEALTH_1:
-					m_pController->OnEntity("health", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_WEAPON_SHOTGUN:
-					m_pController->OnEntity("shotgun", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_WEAPON_GRENADE:
-					m_pController->OnEntity("grenade", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_POWERUP_NINJA:
-					m_pController->OnEntity("ninja", Pivot, P0, P1, P2, P3, -1);
-					break;
-				case ENTITY_WEAPON_RIFLE:
-					m_pController->OnEntity("rifle", Pivot, P0, P1, P2, P3, -1);
-					break;
-				}
-			}
-		}
-	}
-
-	// create all entities from entity layers
-	if (m_Layers.EntityGroup())
-	{
-		char aLayerName[12];
-
-		const CMapItemGroup *pGroup = m_Layers.EntityGroup();
-		for (int l = 0; l < pGroup->m_NumLayers; l++)
-		{
-			CMapItemLayer *pLayer = m_Layers.GetLayer(pGroup->m_StartLayer + l);
-			if (pLayer->m_Type == LAYERTYPE_QUADS)
-			{
-				CMapItemLayerQuads *pQLayer = (CMapItemLayerQuads *)pLayer;
-
-				IntsToStr(pQLayer->m_aName, sizeof(aLayerName) / sizeof(int), aLayerName);
-
-				const CQuad *pQuads = (const CQuad *)Kernel()->RequestInterface<IMap>()->GetDataSwapped(pQLayer->m_Data);
-
-				for (int q = 0; q < pQLayer->m_NumQuads; q++)
-				{
-					vec2 P0(fx2f(pQuads[q].m_aPoints[0].x), fx2f(pQuads[q].m_aPoints[0].y));
-					vec2 P1(fx2f(pQuads[q].m_aPoints[1].x), fx2f(pQuads[q].m_aPoints[1].y));
-					vec2 P2(fx2f(pQuads[q].m_aPoints[2].x), fx2f(pQuads[q].m_aPoints[2].y));
-					vec2 P3(fx2f(pQuads[q].m_aPoints[3].x), fx2f(pQuads[q].m_aPoints[3].y));
-					vec2 Pivot(fx2f(pQuads[q].m_aPoints[4].x), fx2f(pQuads[q].m_aPoints[4].y));
-
-					m_pController->OnEntity(aLayerName, Pivot, P0, P1, P2, P3, pQuads[q].m_PosEnv);
-				}
+				const vec2 Pos(x*32.0f+16.0f, y*32.0f+16.0f);
+				m_pController->OnEntity(Index-ENTITY_OFFSET, Pos);
 			}
 		}
 	}
@@ -1838,7 +1759,7 @@ void CGameContext::OnInit(/*class IKernel *pKernel*/)
 	}
 #endif
 
-	CheckBotNumber();
+	// CheckBotNumber();
 }
 
 void CGameContext::OnShutdown()
@@ -1866,11 +1787,11 @@ void CGameContext::OnSnap(int ClientID)
 	m_Events.Snap(ClientID);
 
 	// Snap bot debug info
-	if(g_Config.m_SvBotEngineDrawGraph)
+	if (g_Config.m_SvBotEngineDrawGraph)
 		m_pBotEngine->Snap(ClientID);
 
-	for(int i = 0; i < MAX_CLIENTS; i++)
-		if(m_apPlayers[i] && m_apPlayers[i]->IsBot() && g_Config.m_SvBotDrawTarget)
+	for (int i = 0; i < MAX_CLIENTS; i++)
+		if (m_apPlayers[i] && m_apPlayers[i]->IsBot() && g_Config.m_SvBotDrawTarget)
 			m_apPlayers[i]->m_pBot->Snap(ClientID);
 
 	for (int i = 0; i < MAX_CLIENTS; i++)
@@ -1895,7 +1816,7 @@ bool CGameContext::IsClientPlayer(int ClientID)
 	return m_apPlayers[ClientID] && m_apPlayers[ClientID]->GetTeam() == TEAM_SPECTATORS ? false : true;
 }
 
-const char *CGameContext::GameType() { return m_pController && m_pController->m_pGameType ? m_pController->m_pGameType : ""; }
+const char *CGameContext::GameType() { return "Tee:World"; }
 const char *CGameContext::Version() { return GAME_VERSION; }
 const char *CGameContext::NetVersion() { return GAME_NETVERSION; }
 
@@ -1925,80 +1846,158 @@ void CGameContext::OnZombieKill(int ClientID)
 	}
 }
 
-void CGameContext::DeleteBot(int i) {
+void CGameContext::DeleteBot(int i)
+{
 	Server()->DelBot(i);
-	if(m_apPlayers[i] && m_apPlayers[i]->m_IsBot) {
-		dbg_msg("context","Delete bot at slot: %d", i);
+	if (m_apPlayers[i] && m_apPlayers[i]->m_IsBot)
+	{
+		dbg_msg("context", "Delete bot at slot: %d", i);
 		delete m_apPlayers[i];
 		m_apPlayers[i] = 0;
 	}
 }
 
-bool CGameContext::AddBot(int i, bool UseDropPlayer) {
+bool CGameContext::AddBot(int i, bool UseDropPlayer)
+{
 	const int StartTeam = g_Config.m_SvTournamentMode ? TEAM_SPECTATORS : m_pController->GetAutoTeam(i);
-	if(StartTeam == TEAM_SPECTATORS)
+	if (StartTeam == TEAM_SPECTATORS)
 		return false;
-	if(Server()->NewBot(i) == 1)
+	if (Server()->NewBot(i) == 1)
 		return false;
-	dbg_msg("context","Add a bot at slot: %d", i);
-	if(!UseDropPlayer || !m_apPlayers[i]) 
-		m_apPlayers[i] = new(i) CPlayer(this, i, 0, 0);
+	dbg_msg("context", "Add a bot at slot: %d", i);
+	if (!UseDropPlayer || !m_apPlayers[i])
+		m_apPlayers[i] = new (i) CPlayer(this, i, 0, 0);
 	m_apPlayers[i]->m_IsBot = true;
 	m_apPlayers[i]->m_pBot = new CBot(m_pBotEngine, m_apPlayers[i]);
-	Server()->SetClientName(i, "Boss Test");
+	Server()->SetClientName(i, "Boss Test", true);
 	Server()->SetClientClan(i, "TeeFun");
 	return true;
 }
 
-bool CGameContext::ReplacePlayerByBot(int ClientID) {
+bool CGameContext::ReplacePlayerByBot(int ClientID)
+{
 	int BotNumber = 0;
 	int PlayerCount = -1;
-	for(int i = 0 ; i < MAX_CLIENTS ; ++i) {
-		if(!m_apPlayers[i])
+	for (int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		if (!m_apPlayers[i])
 			continue;
-		if(m_apPlayers[i]->m_IsBot)
+		if (m_apPlayers[i]->m_IsBot)
 			BotNumber++;
 		else
 			PlayerCount++;
 	}
-	if(!PlayerCount || BotNumber >= g_Config.m_SvBotSlots) 
+	if (!PlayerCount || BotNumber >= g_Config.m_SvBotSlots)
 		return false;
 	return AddBot(ClientID, true);
 }
 
-void CGameContext::CheckBotNumber() {
+void CGameContext::CheckBotNumber()
+{
 	int BotNumber = 0;
 	int PlayerCount = 0;
-	for(int i = 0 ; i < MAX_CLIENTS ; ++i) {
-		if(!m_apPlayers[i])
+	for (int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		if (!m_apPlayers[i])
 			continue;
-		if(m_apPlayers[i]->m_IsBot)
+		if (m_apPlayers[i]->m_IsBot)
 			BotNumber++;
 		else
 			PlayerCount++;
 	}
-	if(!PlayerCount)
+	if (!PlayerCount)
 		BotNumber += g_Config.m_SvBotSlots;
 	// Remove bot excedent
-	if(BotNumber-g_Config.m_SvBotSlots > 0)	{
+	if (BotNumber - g_Config.m_SvBotSlots > 0)
+	{
 		int FirstBot = 0;
-		for(int i = 0 ; i < BotNumber-g_Config.m_SvBotSlots ; i++) {
-			for(; FirstBot < MAX_CLIENTS; FirstBot++)
-				if(m_apPlayers[FirstBot] && m_apPlayers[FirstBot]->m_IsBot)
+		for (int i = 0; i < BotNumber - g_Config.m_SvBotSlots; i++)
+		{
+			for (; FirstBot < MAX_CLIENTS; FirstBot++)
+				if (m_apPlayers[FirstBot] && m_apPlayers[FirstBot]->m_IsBot)
 					break;
-			if(FirstBot < MAX_CLIENTS) 
+			if (FirstBot < MAX_CLIENTS)
 				DeleteBot(FirstBot);
 		}
 	}
 	// Add missing bot if possible
-	if(g_Config.m_SvBotSlots-BotNumber > 0) {
-		int LastFreeSlot = 16-1;
-		for(int i = 0 ; i < g_Config.m_SvBotSlots-BotNumber ; i++) {
-			for(; LastFreeSlot >= 0 ; LastFreeSlot--)
-				if(!m_apPlayers[LastFreeSlot])
+	if (g_Config.m_SvBotSlots - BotNumber > 0)
+	{
+		int LastFreeSlot = 16 - 1;
+		for (int i = 0; i < g_Config.m_SvBotSlots - BotNumber; i++)
+		{
+			for (; LastFreeSlot >= 0; LastFreeSlot--)
+				if (!m_apPlayers[LastFreeSlot])
 					break;
-			if( LastFreeSlot >= 0) 
+			if (LastFreeSlot >= 0)
 				AddBot(LastFreeSlot);
 		}
 	}
+}
+
+// Kurosio did 👇
+
+// Here we use functions that can have static data or functions that don't need to be called in all worlds
+void CGameContext::OnTickMainWorld()
+{
+	return; // May be use future.
+}
+
+CPlayer *CGameContext::GetPlayer(int ClientID, bool CheckAuthed, bool CheckCharacter)
+{
+	if (ClientID < 0 || ClientID >= MAX_CLIENTS || !m_apPlayers[ClientID])
+		return nullptr;
+
+	CPlayer *pPlayer = m_apPlayers[ClientID];
+	if ((CheckAuthed && pPlayer->m_Authed) || !CheckAuthed)
+	{
+		if (CheckCharacter && !pPlayer->GetCharacter())
+			return nullptr;
+		return pPlayer;
+	}
+	return nullptr;
+}
+
+bool CGameContext::IsPlayerEqualWorld(int ClientID, int WorldID) const
+{
+	if (ClientID < 0 || ClientID >= MAX_CLIENTS || !m_apPlayers[ClientID])
+		return false;
+
+	if (WorldID <= -1)
+		return m_apPlayers[ClientID]->GetPlayerWorldID() == m_WorldID;
+	return m_apPlayers[ClientID]->GetPlayerWorldID() == WorldID;
+}
+
+bool CGameContext::IsPlayersNearby(vec2 Pos, float Distance) const
+{
+	for (int i = 0; i < MAX_PLAYERS; i++)
+	{
+		if (m_apPlayers[i] && IsPlayerEqualWorld(i) && distance(Pos, m_apPlayers[i]->m_ViewPos) <= Distance)
+			return true;
+	}
+	return false;
+}
+
+int CPlayer::GetPlayerWorldID() const
+{
+	return Server()->GetClientWorldID(m_ClientID);
+}
+
+// change the world
+void CGameContext::PrepareClientChangeWorld(int ClientID)
+{
+	if (m_apPlayers[ClientID])
+	{
+		m_apPlayers[ClientID]->KillCharacter(WEAPON_WORLD);
+		delete m_apPlayers[ClientID];
+		m_apPlayers[ClientID] = nullptr;
+	}
+	const int AllocMemoryCell = ClientID + m_WorldID * MAX_CLIENTS;
+	m_apPlayers[ClientID] = new (AllocMemoryCell) CPlayer(this, ClientID, TEAM_RED, 0);
+}
+
+// clearing all data at the exit of the client necessarily call once enough
+void CGameContext::ClearClientData(int ClientID)
+{
+	return; //
 }
