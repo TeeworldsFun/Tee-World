@@ -596,7 +596,7 @@ void CCharacter::TickDefered()
 		CWorldCore TempWorld;
 		m_ReckoningCore.Init(&TempWorld, GameServer()->Collision());
 		m_ReckoningCore.Tick(false, &TempWorld.m_Tuning);
-		m_ReckoningCore.Move(&TempWorld.m_Tuning);
+		//m_ReckoningCore.Move(&TempWorld.m_Tuning);
 		m_ReckoningCore.Quantize();
 	}
 

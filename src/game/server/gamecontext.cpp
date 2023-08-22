@@ -457,7 +457,6 @@ void CGameContext::OnTick()
 
 		m_apPlayers[i]->Tick();
 		m_apPlayers[i]->PostTick();
-		dbg_msg("AAA", "RUN");
 	}
 
 	// Zomb2 - fixing a very little bug

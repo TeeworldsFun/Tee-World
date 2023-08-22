@@ -358,7 +358,8 @@ void CCharacterCore::Tick(bool UseInput, const CTuningParams* pTuningParams)
 
 void CCharacterCore::Move(const CTuningParams* pTuningParams)
 {
-	float RampValue = VelocityRamp(length(m_Vel)*50, pTuningParams->m_VelrampStart, pTuningParams->m_VelrampRange, pTuningParams->m_VelrampCurvature);
+	dbg_msg("a", "dd");
+	float RampValue = VelocityRamp(length(m_Vel) * 50, pTuningParams->m_VelrampStart, pTuningParams->m_VelrampRange, pTuningParams->m_VelrampCurvature);
 
 	m_Vel.x = m_Vel.x*RampValue;
 
